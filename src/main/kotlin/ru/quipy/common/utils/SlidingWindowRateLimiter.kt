@@ -6,6 +6,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.time.Clock
 import java.time.Duration
 import java.util.concurrent.Executors
 import java.util.concurrent.PriorityBlockingQueue
@@ -38,10 +39,9 @@ class SlidingWindowRateLimiter(
     }
 
     fun tickBlocking(timeout: Duration) {
-        var curWaiting: Duration = Duration.ofSeconds(0)
-        while (!tick() && curWaiting < timeout) {
+        val deadline = Clock.systemUTC().instant().plus(timeout)
+        while (!tick() && Clock.systemUTC().instant().isBefore(deadline)) {
             Thread.sleep(10)
-            curWaiting = curWaiting.plusMillis(10)
         }
     }
 
