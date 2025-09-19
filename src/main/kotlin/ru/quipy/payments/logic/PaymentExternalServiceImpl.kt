@@ -12,6 +12,7 @@ import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.Semaphore
 
 
 // Advice: always treat time as a Duration
@@ -35,6 +36,7 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
+    private val semaphore = Semaphore(parallelRequests, true)
 
     private val client = OkHttpClient.Builder().build()
 
@@ -50,7 +52,7 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
-
+        semaphore.acquire()
         try {
             // вообще здесь хорошо бы величину, зависящую от processingTimeMIllis, но мы ее не знаем к сожалению.
             rateLimiter.tickBlocking(Duration.ofSeconds(50))
@@ -92,6 +94,8 @@ class PaymentExternalSystemAdapterImpl(
                     }
                 }
             }
+        } finally {
+            semaphore.release()
         }
     }
 
