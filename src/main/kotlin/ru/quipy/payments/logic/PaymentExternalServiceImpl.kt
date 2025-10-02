@@ -11,6 +11,7 @@ import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.atomic.AtomicLong
 
 
 // Advice: always treat time as a Duration
@@ -26,6 +27,8 @@ class PaymentExternalSystemAdapterImpl(
 
         val emptyBody = RequestBody.create(null, ByteArray(0))
         val mapper = ObjectMapper().registerKotlinModule()
+
+        private val lastSendMs = AtomicLong(0)
     }
 
     private val serviceName = properties.serviceName
@@ -35,6 +38,9 @@ class PaymentExternalSystemAdapterImpl(
     private val parallelRequests = properties.parallelRequests
 
     private val client = OkHttpClient.Builder().build()
+
+    private fun isLimit(msg: String?): Boolean =
+        msg?.contains("limit", ignoreCase = true) == true
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -49,6 +55,12 @@ class PaymentExternalSystemAdapterImpl(
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
+        val minInterval = ((requestAverageProcessingTime.toMillis() / parallelRequests.coerceAtLeast(1)).coerceAtLeast(1) * 1.10).toLong().coerceAtLeast(1)
+        val now1 = now()
+        val prev = lastSendMs.getAndSet(now1)
+        val lag  = now1 - prev
+        if (lag < minInterval) Thread.sleep(minInterval - lag)
+
         try {
             val request = Request.Builder().run {
                 url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
@@ -56,11 +68,22 @@ class PaymentExternalSystemAdapterImpl(
             }.build()
 
             client.newCall(request).execute().use { response ->
-                val body = try {
+                var body = try {
                     mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
                 } catch (e: Exception) {
                     logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
                     ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
+                }
+
+                if (!body.result && isLimit(body.message) && now() + 150 < deadline) {
+                    Thread.sleep(100 + (Math.random() * 50).toLong())
+                    client.newCall(request).execute().use { r2 ->
+                        body = try {
+                            mapper.readValue(r2.body?.string(), ExternalSysResponse::class.java)
+                        } catch (_: Exception) {
+                            ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, "parse_error")
+                        }
+                    }
                 }
 
                 logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
