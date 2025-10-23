@@ -27,7 +27,10 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
-    private lateinit var paymentExecutor : ThreadPoolExecutor
+    private lateinit var paymentExecutor: ThreadPoolExecutor
+    private var averageProcessingTime: Long = 0
+    private var rateLimitPerSec: Int = 0
+    private var parallelRequests: Int = 0
 
     @PostConstruct
     private fun initializeExecutor() {
@@ -36,20 +39,24 @@ class OrderPayer {
             16,
             0L,
             TimeUnit.MILLISECONDS,
-            LinkedBlockingQueue(paymentService.getAllAccountProperties().maxOf { properties -> properties.parallelRequests }),
+            LinkedBlockingQueue(10_000),
             NamedThreadFactory("payment-submission-executor"),
-            CallerBlockingRejectedExecutionHandler())
+            CallerBlockingRejectedExecutionHandler()
+        )
+        averageProcessingTime = paymentService.getAllAccountProperties()
+            .maxOf { properties -> properties.averageProcessingTime.toMillis() }
+        rateLimitPerSec = paymentService.getAllAccountProperties()
+            .minOf { properties -> properties.rateLimitPerSec }
+        parallelRequests = paymentService.getAllAccountProperties()
+            .minOf { properties -> properties.parallelRequests }
     }
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-
-        if (paymentExecutor.queue.remainingCapacity() == 0)
-            throw TooManyRequestsError(
-                paymentService.getAllAccountProperties().minOf
-                { properties -> properties.averageProcessingTime.toMillis() }
-            )
-
         val createdAt = System.currentTimeMillis()
+        val queueSize = rateLimitPerSec * (deadline - createdAt - 3 * averageProcessingTime) / 1000 - parallelRequests
+        if (paymentExecutor.queue.size >= queueSize)
+            throw TooManyRequestsError(averageProcessingTime)
+
         paymentExecutor.submit {
             val createdEvent = paymentESService.create {
                 it.create(
