@@ -1,5 +1,6 @@
 package ru.quipy.payments.logic
 
+import jakarta.annotation.PostConstruct
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
@@ -26,18 +27,36 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
-    private val paymentExecutor = ThreadPoolExecutor(
-        16,
-        16,
-        0L,
-        TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(8_000),
-        NamedThreadFactory("payment-submission-executor"),
-        CallerBlockingRejectedExecutionHandler()
-    )
+    private lateinit var paymentExecutor: ThreadPoolExecutor
+    private var averageProcessingTime: Long = 0
+    private var rateLimitPerSec: Int = 0
+    private var parallelRequests: Int = 0
+
+    @PostConstruct
+    private fun initializeExecutor() {
+        paymentExecutor = ThreadPoolExecutor(
+            16,
+            16,
+            0L,
+            TimeUnit.MILLISECONDS,
+            LinkedBlockingQueue(10_000),
+            NamedThreadFactory("payment-submission-executor"),
+            CallerBlockingRejectedExecutionHandler()
+        )
+        averageProcessingTime = paymentService.getAllAccountProperties()
+            .maxOf { properties -> properties.averageProcessingTime.toMillis() }
+        rateLimitPerSec = paymentService.getAllAccountProperties()
+            .minOf { properties -> properties.rateLimitPerSec }
+        parallelRequests = paymentService.getAllAccountProperties()
+            .minOf { properties -> properties.parallelRequests }
+    }
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
+        val queueSize = rateLimitPerSec * (deadline - createdAt - 3 * averageProcessingTime) / 1000 - parallelRequests
+        if (paymentExecutor.queue.size >= queueSize)
+            throw TooManyRequestsError(averageProcessingTime)
+
         paymentExecutor.submit {
             val createdEvent = paymentESService.create {
                 it.create(
@@ -53,3 +72,5 @@ class OrderPayer {
         return createdAt
     }
 }
+
+class TooManyRequestsError(val millisToRetry: Long) : RuntimeException()
