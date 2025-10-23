@@ -53,7 +53,7 @@ class OrderPayer {
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
-        val queueSize = rateLimitPerSec * (deadline - createdAt - 3 * averageProcessingTime) / 1000 - parallelRequests
+        val queueSize = rateLimitPerSec * (deadline - createdAt - averageProcessingTime) / 1000
         if (paymentExecutor.queue.size >= queueSize)
             throw TooManyRequestsError(averageProcessingTime)
 
