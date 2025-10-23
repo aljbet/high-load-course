@@ -6,9 +6,12 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
+import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
+import ru.quipy.common.utils.RateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import java.time.Duration
 import java.util.*
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -32,8 +35,10 @@ class OrderPayer {
     private var rateLimitPerSec: Int = 0
     private var parallelRequests: Int = 0
 
+    private lateinit var rateLimiter : RateLimiter
+
     @PostConstruct
-    private fun initializeExecutor() {
+    private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
             16,
             16,
@@ -41,8 +46,16 @@ class OrderPayer {
             TimeUnit.MILLISECONDS,
             LinkedBlockingQueue(10_000),
             NamedThreadFactory("payment-submission-executor"),
+            CallerBlockingRejectedExecutionHandler())
+        rateLimiter =
+                LeakingBucketRateLimiter(
+                    rate = paymentService.getAllAccountProperties()
+                        .maxOf { properties -> properties.rateLimitPerSec.toLong() },
+                    window = Duration.ofMillis(paymentService.getAllAccountProperties().minOf
+                    { properties -> properties.averageProcessingTime.toMillis() }),
+                    bucketSize = paymentService.getAllAccountProperties().sumOf { it.rateLimitPerSec }
+                )
             CallerBlockingRejectedExecutionHandler()
-        )
         averageProcessingTime = paymentService.getAllAccountProperties()
             .maxOf { properties -> properties.averageProcessingTime.toMillis() }
         rateLimitPerSec = paymentService.getAllAccountProperties()
@@ -52,11 +65,14 @@ class OrderPayer {
     }
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-        val createdAt = System.currentTimeMillis()
-        val queueSize = rateLimitPerSec * (deadline - createdAt - averageProcessingTime) / 1000
-        if (paymentExecutor.queue.size >= queueSize)
-            throw TooManyRequestsError(averageProcessingTime)
 
+        val createdAt = System.currentTimeMillis()
+        if (!rateLimiter.tick()) {
+            throw TooManyRequestsError(
+                paymentService.getAllAccountProperties().minOf
+                { properties -> properties.averageProcessingTime.toMillis() }
+            )
+        }
         paymentExecutor.submit {
             val createdEvent = paymentESService.create {
                 it.create(
