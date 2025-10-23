@@ -47,31 +47,26 @@ class OrderPayer {
             LinkedBlockingQueue(10_000),
             NamedThreadFactory("payment-submission-executor"),
             CallerBlockingRejectedExecutionHandler())
-        rateLimiter =
-                LeakingBucketRateLimiter(
-                    rate = paymentService.getAllAccountProperties()
-                        .maxOf { properties -> properties.rateLimitPerSec.toLong() },
-                    window = Duration.ofMillis(paymentService.getAllAccountProperties().minOf
-                    { properties -> properties.averageProcessingTime.toMillis() }),
-                    bucketSize = paymentService.getAllAccountProperties().sumOf { it.rateLimitPerSec }
-                )
-            CallerBlockingRejectedExecutionHandler()
         averageProcessingTime = paymentService.getAllAccountProperties()
             .maxOf { properties -> properties.averageProcessingTime.toMillis() }
         rateLimitPerSec = paymentService.getAllAccountProperties()
             .minOf { properties -> properties.rateLimitPerSec }
         parallelRequests = paymentService.getAllAccountProperties()
             .minOf { properties -> properties.parallelRequests }
+        rateLimiter =
+                LeakingBucketRateLimiter(
+                    rate = rateLimitPerSec.toLong(),
+                    window = Duration.ofMillis(averageProcessingTime),
+                    bucketSize = paymentService.getAllAccountProperties().sumOf { it.rateLimitPerSec }
+                )
     }
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
 
         val createdAt = System.currentTimeMillis()
-        if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(
-                paymentService.getAllAccountProperties().minOf
-                { properties -> properties.averageProcessingTime.toMillis() }
-            )
+        val queueSize = rateLimitPerSec * (deadline - createdAt - averageProcessingTime) / 1000
+        if (!rateLimiter.tick() || paymentExecutor.queue.size > queueSize) {
+            throw TooManyRequestsError(averageProcessingTime)
         }
         paymentExecutor.submit {
             val createdEvent = paymentESService.create {
