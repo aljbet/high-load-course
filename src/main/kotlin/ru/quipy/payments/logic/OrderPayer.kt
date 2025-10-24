@@ -57,8 +57,8 @@ class OrderPayer {
         rateLimiter =
             LeakingBucketRateLimiter(
                 rate = rateLimitPerSec.toLong(),
-                window = Duration.ofMillis(averageProcessingTime),
-                bucketSize = 250
+                window = Duration.ofMillis(averageProcessingTime * 10),
+                bucketSize = 1000
             )
     }
 
