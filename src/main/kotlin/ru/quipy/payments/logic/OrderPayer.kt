@@ -6,9 +6,12 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
+import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
+import ru.quipy.common.utils.RateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import java.time.Duration
 import java.util.*
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -32,8 +35,10 @@ class OrderPayer {
     private var rateLimitPerSec: Int = 0
     private var parallelRequests: Int = 0
 
+    private lateinit var rateLimiter: RateLimiter
+
     @PostConstruct
-    private fun initializeExecutor() {
+    private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
             16,
             16,
@@ -49,14 +54,19 @@ class OrderPayer {
             .minOf { properties -> properties.rateLimitPerSec }
         parallelRequests = paymentService.getAllAccountProperties()
             .minOf { properties -> properties.parallelRequests }
+        rateLimiter =
+            LeakingBucketRateLimiter(
+                rate = rateLimitPerSec.toLong(),
+                window = Duration.ofMillis(averageProcessingTime * 10),
+                bucketSize = 1000
+            )
     }
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
-        val queueSize = rateLimitPerSec * (deadline - createdAt - 3 * averageProcessingTime) / 1000 - parallelRequests
-        if (paymentExecutor.queue.size >= queueSize)
-            throw TooManyRequestsError(averageProcessingTime)
-
+        if (!rateLimiter.tick()) {
+            throw TooManyRequestsError(averageProcessingTime / 2)
+        }
         paymentExecutor.submit {
             val createdEvent = paymentESService.create {
                 it.create(
