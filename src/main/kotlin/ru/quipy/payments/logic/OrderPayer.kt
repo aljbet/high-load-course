@@ -6,9 +6,9 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
+import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.RateLimiter
-import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.time.Duration
@@ -55,16 +55,17 @@ class OrderPayer {
         parallelRequests = paymentService.getAllAccountProperties()
             .minOf { properties -> properties.parallelRequests }
         rateLimiter =
-            SlidingWindowRateLimiter(
-                rate = rateLimitPerSec.toLong() * 60,
-                window = Duration.ofMillis(60000),
+            LeakingBucketRateLimiter(
+                rate = rateLimitPerSec.toLong(),
+                window = Duration.ofMillis(averageProcessingTime),
+                bucketSize = 250
             )
     }
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(averageProcessingTime)
+            throw TooManyRequestsError(averageProcessingTime / 2)
         }
         paymentExecutor.submit {
             val createdEvent = paymentESService.create {
