@@ -6,9 +6,11 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
+import ru.quipy.common.utils.CompositeRateLimiter
 import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.RateLimiter
+import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.time.Duration
@@ -35,7 +37,7 @@ class OrderPayer {
     private var rateLimitPerSec: Int = 0
     private var parallelRequests: Int = 0
 
-    private lateinit var rateLimiter : RateLimiter
+    private lateinit var rateLimiter: RateLimiter
 
     @PostConstruct
     private fun initialize() {
@@ -46,26 +48,30 @@ class OrderPayer {
             TimeUnit.MILLISECONDS,
             LinkedBlockingQueue(10_000),
             NamedThreadFactory("payment-submission-executor"),
-            CallerBlockingRejectedExecutionHandler())
+            CallerBlockingRejectedExecutionHandler()
+        )
         averageProcessingTime = paymentService.getAllAccountProperties()
             .maxOf { properties -> properties.averageProcessingTime.toMillis() }
         rateLimitPerSec = paymentService.getAllAccountProperties()
             .minOf { properties -> properties.rateLimitPerSec }
         parallelRequests = paymentService.getAllAccountProperties()
             .minOf { properties -> properties.parallelRequests }
-        rateLimiter =
-                LeakingBucketRateLimiter(
-                    rate = rateLimitPerSec.toLong(),
-                    window = Duration.ofMillis(averageProcessingTime),
-                    bucketSize = paymentService.getAllAccountProperties().sumOf { it.rateLimitPerSec }
-                )
+        rateLimiter = CompositeRateLimiter(
+            LeakingBucketRateLimiter(
+                rate = 1,
+                window = Duration.ofMillis(averageProcessingTime / rateLimitPerSec),
+                bucketSize = paymentService.getAllAccountProperties().sumOf { it.rateLimitPerSec }
+            ),
+            SlidingWindowRateLimiter(
+                rate = rateLimitPerSec.toLong() * 2,
+                window = Duration.ofMillis(averageProcessingTime),
+            )
+        )
     }
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-
         val createdAt = System.currentTimeMillis()
-        val queueSize = rateLimitPerSec * (deadline - createdAt - averageProcessingTime) / 1000
-        if (!rateLimiter.tick() || paymentExecutor.queue.size > queueSize) {
+        if (!rateLimiter.tick()) {
             throw TooManyRequestsError(averageProcessingTime)
         }
         paymentExecutor.submit {
