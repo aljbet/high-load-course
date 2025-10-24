@@ -71,7 +71,7 @@ class APIController {
         } catch (e: TooManyRequestsError) {
             ResponseEntity
                 .status(HttpStatus.TOO_MANY_REQUESTS)
-                .header("Retry-After", e.millisToRetry.toString())
+                //.header("Retry-After", e.millisToRetry.toString())
                 .build()
         }
     }

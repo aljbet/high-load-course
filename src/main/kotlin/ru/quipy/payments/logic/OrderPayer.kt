@@ -6,8 +6,6 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
-import ru.quipy.common.utils.CompositeRateLimiter
-import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.RateLimiter
 import ru.quipy.common.utils.SlidingWindowRateLimiter
@@ -56,17 +54,11 @@ class OrderPayer {
             .minOf { properties -> properties.rateLimitPerSec }
         parallelRequests = paymentService.getAllAccountProperties()
             .minOf { properties -> properties.parallelRequests }
-        rateLimiter = CompositeRateLimiter(
-            LeakingBucketRateLimiter(
-                rate = 1,
-                window = Duration.ofMillis(averageProcessingTime / rateLimitPerSec),
-                bucketSize = paymentService.getAllAccountProperties().sumOf { it.rateLimitPerSec }
-            ),
+        rateLimiter =
             SlidingWindowRateLimiter(
-                rate = rateLimitPerSec.toLong() * 2,
-                window = Duration.ofMillis(averageProcessingTime),
+                rate = rateLimitPerSec.toLong() * 60,
+                window = Duration.ofMillis(60000),
             )
-        )
     }
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
