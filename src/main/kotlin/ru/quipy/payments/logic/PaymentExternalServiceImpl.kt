@@ -35,6 +35,7 @@ class PaymentExternalSystemAdapterImpl(
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
+    private val price = properties.price
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
     private val semaphore = Semaphore(parallelRequests, true)
 
@@ -51,12 +52,14 @@ class PaymentExternalSystemAdapterImpl(
             it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
         }
 
-        logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
+        logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
         semaphore.acquire()
         try {
-            val maxRetries = 2
+            val maxRetries = 1
             var attempt = 0
             var done = false
+            val avgProcMs = requestAverageProcessingTime.toMillis()
+            val isBeneficial = amount > price * 4
 
             while (!done) {
                 rateLimiter.tickBlocking()
@@ -78,27 +81,18 @@ class PaymentExternalSystemAdapterImpl(
                         val success = (response.isSuccessful && body.result)
 
                         if (success) {
-                            logger.warn("[$accountName] OK txId=$transactionId payment=$paymentId")
+                            logger.warn("[$accountName] [OK] txId=$transactionId payment=$paymentId")
                             paymentESService.update(paymentId) {
                                 it.logProcessing(true, now(), transactionId, reason = body.message)
                             }
                             done = true
                         } else {
                             val code = response.code
-                            val nowTs = now()
+                            val timeLeft = deadline - now()
+                            val retriableCode = code == 200 || code == 500 || code == 502 || code == 503 || code == 504
 
-                            val timeLeft = deadline - nowTs
-                            val avgProcMs = requestAverageProcessingTime.toMillis()
-                            val canStillFinish = timeLeft > avgProcMs
-
-                            val retriableCode = code == 429 || code == 500 || code == 502 || code == 503 || code == 504
-
-                            if (retriableCode && attempt < maxRetries && canStillFinish) {
-                                val retryAfterMs = response.header("Retry-After")?.toLongOrNull()
-                                    ?.let { it * 1000 }
-                                    ?: (500L * (1L shl attempt))
-
-
+                            if (retriableCode && attempt < maxRetries && timeLeft > avgProcMs && isBeneficial) {
+                                val retryAfterMs = (500L * (1L shl attempt))
                                 val maxSleep = (deadline - now() - avgProcMs).coerceAtLeast(0)
                                 val sleepMs = retryAfterMs.coerceAtMost(maxSleep)
 
@@ -109,7 +103,7 @@ class PaymentExternalSystemAdapterImpl(
                                 }
                             }
 
-                            logger.warn("[$accountName] FAIL txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
+                            logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
                             paymentESService.update(paymentId) {
                                 it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
                             }
@@ -117,24 +111,21 @@ class PaymentExternalSystemAdapterImpl(
                         }
                     }
                 } catch (e: SocketTimeoutException) {
-                    val nowTs = now()
-                    val timeLeft = deadline - nowTs
-                    val avgProcMs = requestAverageProcessingTime.toMillis()
+                    val timeLeft = deadline - now()
 
-                    val canRetry = (attempt < maxRetries) && (timeLeft > avgProcMs + 500)
-                    if (canRetry) {
+                    if (attempt < maxRetries && timeLeft > avgProcMs + 500 && isBeneficial) {
                         Thread.sleep(500L * (1L shl attempt))
                         attempt++
                         continue
                     } else {
-                        logger.error("[$accountName] TIMEOUT txId=$transactionId payment=$paymentId", e)
+                        logger.error("[$accountName] [TIMEOUT] txId=$transactionId payment=$paymentId", e)
                         paymentESService.update(paymentId) {
                             it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
                         }
                         done = true
                     }
                 } catch (e: Exception) {
-                    logger.error("[$accountName] ERROR txId=$transactionId payment=$paymentId", e)
+                    logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", e)
                     paymentESService.update(paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = e.message)
                     }
@@ -153,7 +144,6 @@ class PaymentExternalSystemAdapterImpl(
     override fun getProperties(): PaymentAccountProperties = properties
 
     override fun name() = properties.accountName
-
 }
 
-public fun now() = System.currentTimeMillis()
+fun now() = System.currentTimeMillis()
