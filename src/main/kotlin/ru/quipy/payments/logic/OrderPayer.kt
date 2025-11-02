@@ -57,15 +57,15 @@ class OrderPayer {
         rateLimiter =
             LeakingBucketRateLimiter(
                 rate = rateLimitPerSec.toLong(),
-                window = Duration.ofMillis(averageProcessingTime * 10),
-                bucketSize = 1000
+                window = Duration.ofMillis(averageProcessingTime),
+                bucketSize = paymentService.getAllAccountProperties().sumOf { it.rateLimitPerSec }
             )
     }
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(averageProcessingTime / 2)
+            throw TooManyRequestsError(averageProcessingTime)
         }
         paymentExecutor.submit {
             val createdEvent = paymentESService.create {
