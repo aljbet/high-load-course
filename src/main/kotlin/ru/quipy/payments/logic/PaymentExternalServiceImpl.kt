@@ -56,12 +56,10 @@ class PaymentExternalSystemAdapterImpl(
         semaphore.acquire()
         try {
             val maxRetries = 1
-            var attempt = 0
-            var done = false
             val avgProcMs = requestAverageProcessingTime.toMillis()
             val isBeneficial = amount > price * 4
 
-            while (!done) {
+            for (attempt in 0..maxRetries) {
                 rateLimiter.tickBlocking()
 
                 val request = Request.Builder()
@@ -85,7 +83,7 @@ class PaymentExternalSystemAdapterImpl(
                             paymentESService.update(paymentId) {
                                 it.logProcessing(true, now(), transactionId, reason = body.message)
                             }
-                            done = true
+                            break
                         } else {
                             val code = response.code
                             val timeLeft = deadline - now()
@@ -98,7 +96,6 @@ class PaymentExternalSystemAdapterImpl(
 
                                 if (sleepMs > 0) {
                                     Thread.sleep(sleepMs)
-                                    attempt++
                                     continue
                                 }
                             }
@@ -107,7 +104,7 @@ class PaymentExternalSystemAdapterImpl(
                             paymentESService.update(paymentId) {
                                 it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
                             }
-                            done = true
+                            break
                         }
                     }
                 } catch (e: SocketTimeoutException) {
@@ -115,21 +112,20 @@ class PaymentExternalSystemAdapterImpl(
 
                     if (attempt < maxRetries && timeLeft > avgProcMs + 500 && isBeneficial) {
                         Thread.sleep(500L * (1L shl attempt))
-                        attempt++
                         continue
                     } else {
                         logger.error("[$accountName] [TIMEOUT] txId=$transactionId payment=$paymentId", e)
                         paymentESService.update(paymentId) {
                             it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
                         }
-                        done = true
+                        break
                     }
                 } catch (e: Exception) {
                     logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", e)
                     paymentESService.update(paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = e.message)
                     }
-                    done = true
+                    break
                 }
             }
         } finally {
