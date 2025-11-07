@@ -2,7 +2,8 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
-import io.prometheus.metrics.core.metrics.Summary
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.MeterRegistry
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -22,6 +23,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
+    private val promRegistry: MeterRegistry
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -46,14 +48,9 @@ class PaymentExternalSystemAdapterImpl(
         .writeTimeout(Duration.ofMillis(1000))
         .build()
 
-    private val requestLatency = Summary.builder()
-        .name("request_latency")
-        .help("Request latency.")
-        .quantile(0.5, 0.01)
-        .quantile(0.8, 0.005)
-        .quantile(0.99, 0.005)
-        .labelNames("status_code")
-        .register()
+    private val retryCounterMetric: Counter = Counter
+        .builder("retry_counter")
+        .register(promRegistry)
 
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -90,9 +87,6 @@ class PaymentExternalSystemAdapterImpl(
                             logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId code=${response.code} reason=${response.body?.string()}")
                             ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
                         }
-                        requestLatency
-                            .labelValues(response.code.toString())
-                            .observe(response.receivedResponseAtMillis.toDouble())
 
                         val success = (response.isSuccessful && body.result)
 
@@ -108,6 +102,7 @@ class PaymentExternalSystemAdapterImpl(
                             val retriableCode = code == 200 || code == 500 || code == 502 || code == 503 || code == 504
 
                             if (retriableCode && attempt < maxRetries && timeLeft > avgProcMs && isBeneficial) {
+                                retryCounterMetric.increment()
                                 val retryAfterMs = (500L * (1L shl attempt))
                                 val maxSleep = (deadline - now() - avgProcMs).coerceAtLeast(0)
                                 val sleepMs = retryAfterMs.coerceAtMost(maxSleep)
@@ -130,6 +125,7 @@ class PaymentExternalSystemAdapterImpl(
                     val timeLeft = deadline - now()
 
                     if (attempt < maxRetries && timeLeft > avgProcMs + 500 && isBeneficial) {
+                        retryCounterMetric.increment()
                         Thread.sleep(500L * (1L shl attempt))
                         continue
                     } else {
