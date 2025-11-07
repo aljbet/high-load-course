@@ -3,6 +3,7 @@ package ru.quipy.payments.logic
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -48,9 +49,9 @@ class PaymentExternalSystemAdapterImpl(
         .writeTimeout(Duration.ofMillis(1000))
         .build()
 
-    private val retryCounterMetric: Counter = Counter
-        .builder("retry_counter")
-        .register(promRegistry)
+    private val requestLatency = DistributionSummary.builder("request_latency").publishPercentiles( 0.9, 0.99, 0.999, 0.9999).register(promRegistry)
+
+    private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
 
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -67,6 +68,7 @@ class PaymentExternalSystemAdapterImpl(
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
         semaphore.acquire()
         try {
+            val start = now()
             val maxRetries = 1
             val avgProcMs = requestAverageProcessingTime.toMillis()
 
@@ -143,6 +145,7 @@ class PaymentExternalSystemAdapterImpl(
                     break
                 }
             }
+            requestLatency.record((now() - start).toDouble())
         } finally {
             semaphore.release()
         }
