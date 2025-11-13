@@ -23,7 +23,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
-    private val promRegistry: MeterRegistry
+    promRegistry: MeterRegistry
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -43,8 +43,8 @@ class PaymentExternalSystemAdapterImpl(
     private val semaphore = Semaphore(parallelRequests, true)
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(Duration.ofMillis((requestAverageProcessingTime.toMillis() * 1.5).toLong()))
-        .readTimeout(Duration.ofMillis((requestAverageProcessingTime.toMillis() * 1.5).toLong()))
+        .connectTimeout(Duration.ofMillis(200))
+        .readTimeout(Duration.ofMillis(2000))
         .build()
 
     private val retryCounterMetric: Counter = Counter
