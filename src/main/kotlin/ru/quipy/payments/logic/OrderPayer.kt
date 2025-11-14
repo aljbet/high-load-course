@@ -40,8 +40,8 @@ class OrderPayer {
     @PostConstruct
     private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
-            16,
-            16,
+            50,
+            50,
             0L,
             TimeUnit.MILLISECONDS,
             LinkedBlockingQueue(10_000),
@@ -58,7 +58,7 @@ class OrderPayer {
             LeakingBucketRateLimiter(
                 rate = rateLimitPerSec.toLong(),
                 window = Duration.ofMillis(averageProcessingTime),
-                bucketSize = paymentService.getAllAccountProperties().sumOf { it.rateLimitPerSec }
+                bucketSize = rateLimitPerSec * 2
             )
     }
 

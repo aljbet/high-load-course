@@ -44,11 +44,11 @@ class PaymentExternalSystemAdapterImpl(
     private val semaphore = Semaphore(parallelRequests, true)
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(Duration.ofMillis((requestAverageProcessingTime.toMillis() * 1.5).toLong()))
-        .readTimeout(Duration.ofMillis((requestAverageProcessingTime.toMillis() * 1.5).toLong()))
+        .connectTimeout(Duration.ofMillis(100))
+        .readTimeout(Duration.ofMillis(2000))
         .build()
 
-    private val requestLatency = DistributionSummary.builder("request_latency").publishPercentiles( 0.5, 0.8, 0.99).register(promRegistry)
+    private val requestLatency = DistributionSummary.builder("request_latency").publishPercentiles( 0.90, 0.95, 0.99).register(promRegistry)
 
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
 
