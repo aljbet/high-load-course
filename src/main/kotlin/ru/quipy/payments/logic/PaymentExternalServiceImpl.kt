@@ -48,7 +48,7 @@ class PaymentExternalSystemAdapterImpl(
         .readTimeout(Duration.ofMillis(2000))
         .build()
 
-    private val requestLatency = DistributionSummary.builder("request_latency").publishPercentiles( 0.5, 0.8, 0.99).register(promRegistry)
+    private val requestLatency = DistributionSummary.builder("request_latency").publishPercentiles( 0.9, 0.95, 0.99).register(promRegistry)
 
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
 
