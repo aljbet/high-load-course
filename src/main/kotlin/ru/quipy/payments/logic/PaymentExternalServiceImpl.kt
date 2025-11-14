@@ -44,8 +44,8 @@ class PaymentExternalSystemAdapterImpl(
     private val semaphore = Semaphore(parallelRequests, true)
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(Duration.ofMillis(200))
-        .readTimeout(Duration.ofMillis(2000))
+        .connectTimeout(Duration.ofMillis(100))
+        .readTimeout(Duration.ofMillis(1000))
         .build()
 
     private val requestLatency = DistributionSummary.builder("request_latency").publishPercentiles( 0.9, 0.95, 0.99).register(promRegistry)
