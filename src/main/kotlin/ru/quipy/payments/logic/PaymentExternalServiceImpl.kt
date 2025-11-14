@@ -2,6 +2,9 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.DistributionSummary
+import io.micrometer.core.instrument.MeterRegistry
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -21,6 +24,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
+    promRegistry: MeterRegistry
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -39,7 +43,15 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
     private val semaphore = Semaphore(parallelRequests, true)
 
-    private val client = OkHttpClient.Builder().build()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(Duration.ofMillis(200))
+        .readTimeout(Duration.ofMillis(2000))
+        .build()
+
+    private val requestLatency = DistributionSummary.builder("request_latency").publishPercentiles( 0.9, 0.95, 0.99).register(promRegistry)
+
+    private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
+
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -55,11 +67,12 @@ class PaymentExternalSystemAdapterImpl(
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
         semaphore.acquire()
         try {
+            val start = now()
             val maxRetries = 1
             val avgProcMs = requestAverageProcessingTime.toMillis()
-            val isBeneficial = amount > price * 4
 
             for (attempt in 0..maxRetries) {
+                val isBeneficial = amount > price * (attempt + 1)
                 rateLimiter.tickBlocking()
 
                 val request = Request.Builder()
@@ -90,10 +103,12 @@ class PaymentExternalSystemAdapterImpl(
                             val retriableCode = code == 200 || code == 500 || code == 502 || code == 503 || code == 504
 
                             if (retriableCode && attempt < maxRetries && timeLeft > avgProcMs && isBeneficial) {
+                                retryCounterMetric.increment()
                                 val retryAfterMs = (500L * (1L shl attempt))
                                 val maxSleep = (deadline - now() - avgProcMs).coerceAtLeast(0)
                                 val sleepMs = retryAfterMs.coerceAtMost(maxSleep)
 
+                                logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $sleepMs ms.")
                                 if (sleepMs > 0) {
                                     Thread.sleep(sleepMs)
                                     continue
@@ -111,6 +126,7 @@ class PaymentExternalSystemAdapterImpl(
                     val timeLeft = deadline - now()
 
                     if (attempt < maxRetries && timeLeft > avgProcMs + 500 && isBeneficial) {
+                        retryCounterMetric.increment()
                         Thread.sleep(500L * (1L shl attempt))
                         continue
                     } else {
@@ -128,6 +144,7 @@ class PaymentExternalSystemAdapterImpl(
                     break
                 }
             }
+            requestLatency.record((now() - start).toDouble())
         } finally {
             semaphore.release()
         }
