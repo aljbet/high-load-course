@@ -24,7 +24,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
-    private val promRegistry: MeterRegistry
+    promRegistry: MeterRegistry
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -45,10 +45,10 @@ class PaymentExternalSystemAdapterImpl(
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(Duration.ofMillis(100))
-        .readTimeout(Duration.ofMillis(2000))
+        .readTimeout(Duration.ofMillis(1000))
         .build()
 
-    private val requestLatency = DistributionSummary.builder("request_latency").publishPercentiles( 0.90, 0.95, 0.99).register(promRegistry)
+    private val requestLatency = DistributionSummary.builder("request_latency").publishPercentiles( 0.9, 0.95, 0.99).register(promRegistry)
 
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
 
