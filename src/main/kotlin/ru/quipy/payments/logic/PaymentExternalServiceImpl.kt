@@ -45,7 +45,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(Duration.ofMillis(100))
-        .readTimeout(Duration.ofMillis(1000))
+        .readTimeout(Duration.ofMillis(20000))
         .build()
 
     private val requestLatency = DistributionSummary.builder("request_latency").publishPercentiles( 0.9, 0.95, 0.99).register(promRegistry)
