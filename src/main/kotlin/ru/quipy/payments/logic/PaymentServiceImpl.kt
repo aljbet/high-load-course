@@ -1,16 +1,8 @@
 package ru.quipy.payments.logic
 
 import org.slf4j.LoggerFactory
-import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
-import ru.quipy.common.utils.NamedThreadFactory
-import ru.quipy.core.EventSourcingService
-import ru.quipy.payments.api.PaymentAggregate
-import java.time.Duration
-import java.util.*
-import java.util.concurrent.Executors
-import java.util.concurrent.locks.ReentrantLock
-import kotlin.concurrent.withLock
+import java.util.UUID
 
 
 @Service
@@ -23,7 +15,6 @@ class PaymentSystemImpl(
 
     override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         for (account in paymentAccounts) {
-//            account.performPaymentSync(paymentId, amount, paymentStartedAt, deadline)
             account.performPaymentAsync(paymentId, amount, paymentStartedAt, deadline)
         }
     }
