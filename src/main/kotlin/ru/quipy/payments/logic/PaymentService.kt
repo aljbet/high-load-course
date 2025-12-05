@@ -9,7 +9,7 @@ interface PaymentService {
      */
     fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
 
-    fun getAllAccountProperties() : List<PaymentAccountProperties>
+    fun getAllAccountProperties(): List<PaymentAccountProperties>
 }
 
 /**
@@ -20,6 +20,8 @@ interface PaymentService {
  */
 interface PaymentExternalSystemAdapter {
     fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
+
+    fun performPaymentSync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
 
     fun name(): String
 
