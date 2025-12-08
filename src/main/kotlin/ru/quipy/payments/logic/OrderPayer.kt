@@ -3,7 +3,7 @@ package ru.quipy.payments.logic
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
@@ -72,7 +72,8 @@ class OrderPayer {
         if (!rateLimiter.tick()) {
             throw TooManyRequestsError(averageProcessingTime)
         }
-        executorScope.launch {
+
+        executorScope.async {
             val createdEvent = paymentESService.create {
                 it.create(
                     paymentId,
