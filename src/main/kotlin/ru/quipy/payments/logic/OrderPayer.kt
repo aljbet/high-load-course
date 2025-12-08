@@ -3,7 +3,7 @@ package ru.quipy.payments.logic
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
@@ -44,15 +44,15 @@ class OrderPayer {
     @PostConstruct
     private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
-            64,
-            64,
+            16,
+            16,
             0L,
             TimeUnit.MILLISECONDS,
             LinkedBlockingQueue(10_000),
             NamedThreadFactory("payment-submission-executor"),
             CallerBlockingRejectedExecutionHandler()
         )
-        executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher());
+        executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
         averageProcessingTime = paymentService.getAllAccountProperties()
             .maxOf { properties -> properties.averageProcessingTime.toMillis() }
         rateLimitPerSec = paymentService.getAllAccountProperties()
@@ -61,18 +61,18 @@ class OrderPayer {
             .minOf { properties -> properties.parallelRequests }
         rateLimiter =
             LeakingBucketRateLimiter(
-                rate = rateLimitPerSec.toLong(),
+                rate = 1100,
                 window = Duration.ofMillis(1000),
-                bucketSize = rateLimitPerSec * 5
+                bucketSize = 20000
             )
     }
 
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(averageProcessingTime)
+            throw TooManyRequestsError(10000)
         }
-        executorScope.launch {
+        executorScope.async {
             val createdEvent = paymentESService.create {
                 it.create(
                     paymentId,
