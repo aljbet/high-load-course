@@ -58,7 +58,7 @@ class PaymentExternalSystemAdapterImpl(
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
     private val scheduler = Executors.newScheduledThreadPool(100)
 
-    override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+    override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
         val transactionId = UUID.randomUUID()
