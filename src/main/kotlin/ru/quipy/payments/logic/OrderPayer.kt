@@ -72,6 +72,7 @@ class OrderPayer {
         if (!rateLimiter.tick()) {
             throw TooManyRequestsError(10000)
         }
+
         executorScope.async {
             val createdEvent = paymentESService.create {
                 it.create(
