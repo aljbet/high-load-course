@@ -126,7 +126,7 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     val timeLeft = deadline - now()
-                    val retriableCode = code == 500 || code == 502 || code == 503 || code == 504
+                    val retriableCode = code == 200 || code == 500 || code == 502 || code == 503 || code == 504
 
                     if (retriableCode && attempt < maxRetries && timeLeft > avgProcMs && isBeneficial) {
                         retryCounterMetric.increment()
