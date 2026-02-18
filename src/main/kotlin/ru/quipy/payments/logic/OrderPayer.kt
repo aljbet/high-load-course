@@ -1,5 +1,7 @@
 package ru.quipy.payments.logic
 
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.MeterRegistry
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -33,6 +35,9 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
+    @Autowired
+    private lateinit var promRegistry: MeterRegistry
+
     private lateinit var paymentExecutor: ThreadPoolExecutor
     private lateinit var executorScope: CoroutineScope
     private var averageProcessingTime: Long = 0
@@ -40,6 +45,8 @@ class OrderPayer {
     private var parallelRequests: Int = 0
 
     private lateinit var rateLimiter: RateLimiter
+    private lateinit var orderPayerQueueMetric: Counter
+    private lateinit var orderPayerAfterRlQueueMetric: Counter
 
     @PostConstruct
     private fun initialize() {
@@ -61,17 +68,21 @@ class OrderPayer {
             .minOf { properties -> properties.parallelRequests }
         rateLimiter =
             LeakingBucketRateLimiter(
-                rate = 1100,
-                window = Duration.ofMillis(1000),
-                bucketSize = 20000
+                rate = 50,
+                window = Duration.ofMillis(10),
+                bucketSize = 5000
             )
+        orderPayerQueueMetric = Counter.builder("order_payer_queue").register(promRegistry)
+        orderPayerAfterRlQueueMetric = Counter.builder("order_payer_after_rl_queue").register(promRegistry)
     }
 
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
+        orderPayerQueueMetric.increment()
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
             throw TooManyRequestsError(10000)
         }
+        orderPayerAfterRlQueueMetric.increment()
 
         executorScope.async {
             val createdEvent = paymentESService.create {

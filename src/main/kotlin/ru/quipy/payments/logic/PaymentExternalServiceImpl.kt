@@ -62,7 +62,7 @@ class PaymentExternalSystemAdapterImpl(
         NamedThreadFactory("http-executor"),
         CallerBlockingRejectedExecutionHandler()
     )
-    private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher());
+    private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
 
     private val client = HttpClient.newBuilder()
         .executor(Executors.newFixedThreadPool(100))
@@ -76,9 +76,13 @@ class PaymentExternalSystemAdapterImpl(
         .register(promRegistry)
 
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
+    private val externalAdapterQueueMetric: Counter = Counter.builder("external_adapter_queue").register(promRegistry)
+    private val beforeSemaphoreQueueMetric: Counter = Counter.builder("before_semaphore_queue").register(promRegistry)
+    private val beforeRlQueueMetric: Counter = Counter.builder("before_rl_queue").register(promRegistry)
     private val scheduler = Executors.newScheduledThreadPool(100)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+        externalAdapterQueueMetric.increment()
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
         val transactionId = UUID.randomUUID()
@@ -96,7 +100,9 @@ class PaymentExternalSystemAdapterImpl(
 
         suspend fun attemptCall(attempt: Int) {
             val isBeneficial = amount > price * (attempt + 1)
+            beforeSemaphoreQueueMetric.increment()
             semaphore.withPermit {
+                beforeRlQueueMetric.increment()
                 rateLimiter.tickBlocking()
 
                 val request = HttpRequest.newBuilder()
