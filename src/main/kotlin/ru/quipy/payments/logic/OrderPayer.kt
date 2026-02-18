@@ -68,9 +68,9 @@ class OrderPayer {
             .minOf { properties -> properties.parallelRequests }
         rateLimiter =
             LeakingBucketRateLimiter(
-                rate = 50,
-                window = Duration.ofMillis(10),
-                bucketSize = 5000
+                rate = 5000,
+                window = Duration.ofMillis(1000),
+                bucketSize = 20000
             )
         orderPayerQueueMetric = Counter.builder("order_payer_queue").register(promRegistry)
         orderPayerAfterRlQueueMetric = Counter.builder("order_payer_after_rl_queue").register(promRegistry)
