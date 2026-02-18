@@ -68,7 +68,7 @@ class OrderPayer {
             .minOf { properties -> properties.parallelRequests }
         rateLimiter =
             LeakingBucketRateLimiter(
-                rate = 1100,
+                rate = 2000,
                 window = Duration.ofMillis(1000),
                 bucketSize = 20000
             )
