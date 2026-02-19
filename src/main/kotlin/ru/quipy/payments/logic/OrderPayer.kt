@@ -68,9 +68,9 @@ class OrderPayer {
             .minOf { properties -> properties.parallelRequests }
         rateLimiter =
             LeakingBucketRateLimiter(
-                rate = 2000,
-                window = Duration.ofMillis(1000),
-                bucketSize = 20000
+                rate = 50,
+                window = Duration.ofMillis(10),
+                bucketSize = 1000
             )
         orderPayerQueueMetric = Counter.builder("order_payer_queue").register(promRegistry)
         orderPayerAfterRlQueueMetric = Counter.builder("order_payer_after_rl_queue").register(promRegistry)
@@ -80,7 +80,7 @@ class OrderPayer {
         orderPayerQueueMetric.increment()
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(10000)
+            throw TooManyRequestsError(200)
         }
         orderPayerAfterRlQueueMetric.increment()
 
