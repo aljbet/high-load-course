@@ -44,7 +44,7 @@ class OrderPayer {
     private var rateLimitPerSec: Int = 0
     private var parallelRequests: Int = 0
 
-    private lateinit var rateLimiter: RateLimiter
+    private lateinit var rateLimiter: LeakingBucketRateLimiter
     private lateinit var orderPayerQueueMetric: Counter
     private lateinit var orderPayerAfterRlQueueMetric: Counter
     private lateinit var counterMetricBeforeTick: Counter
@@ -82,6 +82,7 @@ class OrderPayer {
         orderPayerAfterRlQueueMetric = Counter.builder("order_payer_after_rl_queue").register(promRegistry)
     }
 
+    // 4000
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         counterMetricBeforeTick.increment()
         orderPayerQueueMetric.increment()
@@ -101,6 +102,7 @@ class OrderPayer {
             }
             logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
 
+            rateLimiter.pshhh()
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
         }
         counterMetricAfterJob.increment()
