@@ -58,7 +58,7 @@ class PaymentExternalSystemAdapterImpl(
         16,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(10_000),
+        LinkedBlockingQueue(2000),
         NamedThreadFactory("http-executor"),
         CallerBlockingRejectedExecutionHandler()
     )
@@ -107,7 +107,7 @@ class PaymentExternalSystemAdapterImpl(
 
                 val request = HttpRequest.newBuilder()
                     .uri(URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"))
-                    .timeout(Duration.ofMillis(20000))   // read timeout
+                    .timeout(Duration.ofMillis(1000))   // read timeout
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build()
                 try {
