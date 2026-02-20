@@ -58,7 +58,7 @@ class PaymentExternalSystemAdapterImpl(
         16,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(2000),
+        LinkedBlockingQueue(5000),
         NamedThreadFactory("http-executor"),
         CallerBlockingRejectedExecutionHandler()
     )
