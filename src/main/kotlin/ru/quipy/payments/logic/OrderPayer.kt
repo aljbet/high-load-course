@@ -58,7 +58,7 @@ class OrderPayer {
             16,
             0L,
             TimeUnit.MILLISECONDS,
-            LinkedBlockingQueue(10_000),
+            LinkedBlockingQueue(5000),
             NamedThreadFactory("payment-submission-executor"),
             CallerBlockingRejectedExecutionHandler()
         )
@@ -71,9 +71,9 @@ class OrderPayer {
             .minOf { properties -> properties.parallelRequests }
         rateLimiter =
             LeakingBucketRateLimiter(
-                rate = 50,
-                window = Duration.ofMillis(5),
-                bucketSize = 1000
+                rate = 2000,
+                window = Duration.ofMillis(10),
+                bucketSize = 5000
             )
         counterMetricBeforeTick = Counter.builder("MY_METR_to_order_payer_before_tick").register(promRegistry)
         counterMetricAfterTick = Counter.builder("MY_METR_to_order_payer_after_tick").register(promRegistry)
@@ -87,7 +87,7 @@ class OrderPayer {
         orderPayerQueueMetric.increment()
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(100)
+            throw TooManyRequestsError(30)
         }
         orderPayerAfterRlQueueMetric.increment()
 

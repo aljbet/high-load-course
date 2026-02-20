@@ -50,7 +50,7 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val price = properties.price
-    private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
+    private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofMillis(10))
     private val semaphore = Semaphore(parallelRequests)
 
     private val httpExecutor = ThreadPoolExecutor(
@@ -58,14 +58,14 @@ class PaymentExternalSystemAdapterImpl(
         16,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(10_000),
+        LinkedBlockingQueue(5000),
         NamedThreadFactory("http-executor"),
         CallerBlockingRejectedExecutionHandler()
     )
     private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
 
     private val client = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(100))
+        .executor(Executors.newFixedThreadPool(2000))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
@@ -79,7 +79,7 @@ class PaymentExternalSystemAdapterImpl(
     private val externalAdapterQueueMetric: Counter = Counter.builder("external_adapter_queue").register(promRegistry)
     private val beforeSemaphoreQueueMetric: Counter = Counter.builder("before_semaphore_queue").register(promRegistry)
     private val beforeRlQueueMetric: Counter = Counter.builder("before_rl_queue").register(promRegistry)
-    private val scheduler = Executors.newScheduledThreadPool(100)
+    private val scheduler = Executors.newScheduledThreadPool(2000)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         externalAdapterQueueMetric.increment()
@@ -107,7 +107,7 @@ class PaymentExternalSystemAdapterImpl(
 
                 val request = HttpRequest.newBuilder()
                     .uri(URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"))
-                    .timeout(Duration.ofMillis(20000))   // read timeout
+                    .timeout(Duration.ofMillis(5000))   // read timeout
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build()
                 try {
@@ -136,7 +136,7 @@ class PaymentExternalSystemAdapterImpl(
 
                     if (retriableCode && attempt < maxRetries && timeLeft > avgProcMs && isBeneficial) {
                         retryCounterMetric.increment()
-                        val retryAfterMs = (500L * (1L shl attempt))
+                        val retryAfterMs = (50L * (1L shl attempt))
                         logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $retryAfterMs ms.")
                         scheduler.schedule(
                             { httpExecutorScope.async { attemptCall(attempt + 1) } },
@@ -156,9 +156,9 @@ class PaymentExternalSystemAdapterImpl(
                     val isTimeout = ex is SocketTimeoutException
                     val timeLeft = deadline - now()
 
-                    if (isTimeout && attempt < maxRetries && timeLeft > avgProcMs + 500 && isBeneficial) {
+                    if (isTimeout && attempt < maxRetries && timeLeft > avgProcMs + 50 && isBeneficial) {
                         retryCounterMetric.increment()
-                        val retryAfterMs = (500L * (1L shl attempt))
+                        val retryAfterMs = (50L * (1L shl attempt))
                         scheduler.schedule(
                             { httpExecutorScope.async { attemptCall(attempt + 1) } },
                             retryAfterMs,
