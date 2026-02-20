@@ -47,6 +47,9 @@ class OrderPayer {
     private lateinit var rateLimiter: RateLimiter
     private lateinit var orderPayerQueueMetric: Counter
     private lateinit var orderPayerAfterRlQueueMetric: Counter
+    private lateinit var counterMetricBeforeTick: Counter
+    private lateinit var counterMetricAfterTick: Counter
+    private lateinit var counterMetricAfterJob: Counter
 
     @PostConstruct
     private fun initialize() {
@@ -69,18 +72,22 @@ class OrderPayer {
         rateLimiter =
             LeakingBucketRateLimiter(
                 rate = 50,
-                window = Duration.ofMillis(10),
+                window = Duration.ofMillis(5),
                 bucketSize = 1000
             )
+        counterMetricBeforeTick = Counter.builder("MY_METR_to_order_payer_before_tick").register(promRegistry)
+        counterMetricAfterTick = Counter.builder("MY_METR_to_order_payer_after_tick").register(promRegistry)
+        counterMetricAfterJob = Counter.builder("MY_METR_after_job").register(promRegistry)
         orderPayerQueueMetric = Counter.builder("order_payer_queue").register(promRegistry)
         orderPayerAfterRlQueueMetric = Counter.builder("order_payer_after_rl_queue").register(promRegistry)
     }
 
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
+        counterMetricBeforeTick.increment()
         orderPayerQueueMetric.increment()
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(200)
+            throw TooManyRequestsError(100)
         }
         orderPayerAfterRlQueueMetric.increment()
 
@@ -96,6 +103,7 @@ class OrderPayer {
 
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
         }
+        counterMetricAfterJob.increment()
         return createdAt
     }
 }
