@@ -102,7 +102,6 @@ class OrderPayer {
             }
             logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
 
-            rateLimiter.pshhh()
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
         }
         counterMetricAfterJob.increment()
