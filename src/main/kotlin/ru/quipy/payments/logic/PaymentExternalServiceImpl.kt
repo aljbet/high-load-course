@@ -6,9 +6,12 @@ import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.slf4j.LoggerFactory
@@ -46,11 +49,11 @@ class PaymentExternalSystemAdapterImpl(
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
-    private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val rateLimitPerSec = properties.rateLimitPerSec
-    private val parallelRequests = properties.parallelRequests
-    private val price = properties.price
-    private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofMillis(10))
+    private val requestAverageProcessingTime = Duration.ofMillis(10)
+    private val rateLimitPerSec = 5000
+    private val parallelRequests = 2000
+    private val price = 30
+    private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
     private val semaphore = Semaphore(parallelRequests)
 
     private val httpExecutor = ThreadPoolExecutor(
@@ -58,17 +61,17 @@ class PaymentExternalSystemAdapterImpl(
         150,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(5000),
+        LinkedBlockingQueue(),
         NamedThreadFactory("http-executor"),
-        CallerBlockingRejectedExecutionHandler()
+        ThreadPoolExecutor.AbortPolicy()
     )
-    private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
+//    private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
+    private val httpExecutorScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val client = HttpClient.newBuilder()
         .executor(Executors.newFixedThreadPool(2000))
         .version(HttpClient.Version.HTTP_2)
         .build()
-
 
     private val requestLatency = DistributionSummary
         .builder("request_latency")
@@ -79,9 +82,9 @@ class PaymentExternalSystemAdapterImpl(
     private val externalAdapterQueueMetric: Counter = Counter.builder("external_adapter_queue").register(promRegistry)
     private val beforeSemaphoreQueueMetric: Counter = Counter.builder("before_semaphore_queue").register(promRegistry)
     private val beforeRlQueueMetric: Counter = Counter.builder("before_rl_queue").register(promRegistry)
-    private val scheduler = Executors.newScheduledThreadPool(2000)
+    private val scheduler = Executors.newScheduledThreadPool(10)
 
-    override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+    override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long, onComplete: () -> Unit) {
         externalAdapterQueueMetric.increment()
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
@@ -99,6 +102,14 @@ class PaymentExternalSystemAdapterImpl(
         val avgProcMs = requestAverageProcessingTime.toMillis()
 
         suspend fun attemptCall(attempt: Int) {
+            if (now() > deadline) {
+                logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId reason=Deadline exceeded")
+                paymentESService.update(paymentId) {
+                    it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
+                }
+                return
+            }
+
             val isBeneficial = amount > price * (attempt + 1)
             beforeSemaphoreQueueMetric.increment()
             semaphore.withPermit {
@@ -175,7 +186,16 @@ class PaymentExternalSystemAdapterImpl(
             }
         }
 
-        httpExecutorScope.async { attemptCall(0) }
+//        httpExecutorScope.async { attemptCall(0) }
+        httpExecutorScope.launch {
+            try {
+                attemptCall(0)
+            } catch (e: Exception) {
+                logger.error("[$accountName] [ERROR] payment=$paymentId", e)
+            } finally {
+                onComplete()
+            }
+        }
     }
 
     override fun price() = properties.price

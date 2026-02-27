@@ -27,10 +27,10 @@ class PaymentSystemImpl(
         paymentSystemQueueMetric = Counter.builder("payment_system_queue").register(promRegistry)
     }
 
-    override suspend fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+    override suspend fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long, onComplete: () -> Unit) {
         for (account in paymentAccounts) {
             paymentSystemQueueMetric.increment()
-            account.performPaymentAsync(paymentId, amount, paymentStartedAt, deadline)
+            account.performPaymentAsync(paymentId, amount, paymentStartedAt, deadline, onComplete)
         }
     }
 
