@@ -11,12 +11,11 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
-import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.RateLimiter
+import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
-import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -40,11 +39,11 @@ class OrderPayer {
 
     private lateinit var paymentExecutor: ThreadPoolExecutor
     private lateinit var executorScope: CoroutineScope
-    private var averageProcessingTime: Long = 0
-    private var rateLimitPerSec: Int = 0
-    private var parallelRequests: Int = 0
+    private var averageProcessingTime: Long = 10
+    private var rateLimitPerSec: Int = 5000
+    private var parallelRequests: Int = 2000
 
-    private lateinit var rateLimiter: LeakingBucketRateLimiter
+    private lateinit var rateLimiter: RateLimiter
     private lateinit var orderPayerQueueMetric: Counter
     private lateinit var orderPayerAfterRlQueueMetric: Counter
     private lateinit var counterMetricBeforeTick: Counter
@@ -54,8 +53,8 @@ class OrderPayer {
     @PostConstruct
     private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
-            16,
-            16,
+            150,
+            150,
             0L,
             TimeUnit.MILLISECONDS,
             LinkedBlockingQueue(5000),
@@ -63,17 +62,11 @@ class OrderPayer {
             CallerBlockingRejectedExecutionHandler()
         )
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
-        averageProcessingTime = paymentService.getAllAccountProperties()
-            .maxOf { properties -> properties.averageProcessingTime.toMillis() }
-        rateLimitPerSec = paymentService.getAllAccountProperties()
-            .minOf { properties -> properties.rateLimitPerSec }
-        parallelRequests = paymentService.getAllAccountProperties()
-            .minOf { properties -> properties.parallelRequests }
         rateLimiter =
-            LeakingBucketRateLimiter(
-                rate = 2000,
-                window = Duration.ofMillis(10),
-                bucketSize = 5000
+            TokenBucketRateLimiter(
+                rate = 800,
+                bucketMaxCapacity = 560,
+                window = 1000,
             )
         counterMetricBeforeTick = Counter.builder("MY_METR_to_order_payer_before_tick").register(promRegistry)
         counterMetricAfterTick = Counter.builder("MY_METR_to_order_payer_after_tick").register(promRegistry)
@@ -82,13 +75,12 @@ class OrderPayer {
         orderPayerAfterRlQueueMetric = Counter.builder("order_payer_after_rl_queue").register(promRegistry)
     }
 
-    // 4000
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         counterMetricBeforeTick.increment()
         orderPayerQueueMetric.increment()
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(30)
+            throw TooManyRequestsError(50)
         }
         orderPayerAfterRlQueueMetric.increment()
 

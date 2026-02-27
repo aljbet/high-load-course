@@ -54,8 +54,8 @@ class PaymentExternalSystemAdapterImpl(
     private val semaphore = Semaphore(parallelRequests)
 
     private val httpExecutor = ThreadPoolExecutor(
-        16,
-        16,
+        150,
+        150,
         0L,
         TimeUnit.MILLISECONDS,
         LinkedBlockingQueue(5000),
