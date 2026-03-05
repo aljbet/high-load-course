@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.SlidingWindowRateLimiter
+import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
@@ -53,7 +54,16 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = 5000
     private val parallelRequests = 2000
     private val price = 30
-    private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
+    private val rateLimiter =
+//        SlidingWindowRateLimiter(
+//            rateLimitPerSec.toLong(),
+//            Duration.ofSeconds(1)
+//        )
+        TokenBucketRateLimiter(
+            rate = 800,
+            bucketMaxCapacity = 560,
+            window = 1000,
+        )
     private val semaphore = Semaphore(parallelRequests)
 
     private val httpExecutor = ThreadPoolExecutor(
@@ -66,7 +76,6 @@ class PaymentExternalSystemAdapterImpl(
         ThreadPoolExecutor.AbortPolicy()
     )
     private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
-//    private val httpExecutorScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val client = HttpClient.newBuilder()
         .executor(Executors.newFixedThreadPool(2000))
@@ -82,7 +91,7 @@ class PaymentExternalSystemAdapterImpl(
     private val externalAdapterQueueMetric: Counter = Counter.builder("external_adapter_queue").register(promRegistry)
     private val beforeSemaphoreQueueMetric: Counter = Counter.builder("before_semaphore_queue").register(promRegistry)
     private val beforeRlQueueMetric: Counter = Counter.builder("before_rl_queue").register(promRegistry)
-    private val scheduler = Executors.newScheduledThreadPool(100)
+    private val scheduler = Executors.newScheduledThreadPool(150)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         externalAdapterQueueMetric.increment()
