@@ -6,18 +6,13 @@ import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.future.await
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.slf4j.LoggerFactory
-import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.NamedThreadFactory
-import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
@@ -123,7 +118,7 @@ class PaymentExternalSystemAdapterImpl(
             beforeSemaphoreQueueMetric.increment()
             semaphore.withPermit {
                 beforeRlQueueMetric.increment()
-                rateLimiter.tickBlocking()
+                rateLimiter.tick()
 
                 val request = HttpRequest.newBuilder()
                     .uri(URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"))
