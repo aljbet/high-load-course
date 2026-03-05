@@ -7,7 +7,7 @@ interface PaymentService {
     /**
      * Submit payment request to some external service.
      */
-    suspend fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long, onComplete: () -> Unit = {})
+    suspend fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
 
     fun getAllAccountProperties(): List<PaymentAccountProperties>
 }
@@ -19,7 +19,7 @@ interface PaymentService {
 
  */
 interface PaymentExternalSystemAdapter {
-    suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long, onComplete: () -> Unit = {})
+    suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
 
     fun name(): String
 

@@ -6,15 +6,11 @@ import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
-import kotlinx.coroutines.launch
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
-import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.NamedThreadFactory
-import ru.quipy.common.utils.RateLimiter
-import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.util.UUID
@@ -41,11 +37,6 @@ class OrderPayer {
 
     private lateinit var paymentExecutor: ThreadPoolExecutor
     private lateinit var executorScope: CoroutineScope
-//    private var averageProcessingTime: Long = 10
-//    private var rateLimitPerSec: Int = 5000
-//    private var parallelRequests: Int = 2000
-
-//    private lateinit var rateLimiter: RateLimiter
     private lateinit var orderPayerQueueMetric: Counter
     private lateinit var orderPayerAfterRlQueueMetric: Counter
     private lateinit var counterMetricBeforeTick: Counter
@@ -60,18 +51,11 @@ class OrderPayer {
             16,
             0L,
             TimeUnit.MILLISECONDS,
-            LinkedBlockingQueue(),
+            LinkedBlockingQueue(5000),
             NamedThreadFactory("payment-submission-executor"),
-//            CallerBlockingRejectedExecutionHandler()
             ThreadPoolExecutor.AbortPolicy()
         )
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
-//        rateLimiter =
-//            TokenBucketRateLimiter(
-//                rate = 800,
-//                bucketMaxCapacity = 560,
-//                window = 1000,
-//            )
         counterMetricBeforeTick = Counter.builder("MY_METR_to_order_payer_before_tick").register(promRegistry)
         counterMetricAfterTick = Counter.builder("MY_METR_to_order_payer_after_tick").register(promRegistry)
         counterMetricAfterJob = Counter.builder("MY_METR_after_job").register(promRegistry)
@@ -83,21 +67,13 @@ class OrderPayer {
         counterMetricBeforeTick.increment()
         orderPayerQueueMetric.increment()
         val createdAt = System.currentTimeMillis()
-        val rateSec = 5000.0 / 60
-        val currentPending = pending.getAndIncrement()
 
-//        if (!rateLimiter.tick()) {
-//            throw TooManyRequestsError(50)
-//        }
-        if (currentPending >= rateSec * 1.0) {
-            pending.decrementAndGet()
-            val millisToRetry = ((currentPending / rateSec) * 1000).toLong() + 100
-            throw TooManyRequestsError(millisToRetry)
+        if (paymentExecutor.queue.remainingCapacity() == 0) {
+            throw TooManyRequestsError(50)
         }
         orderPayerAfterRlQueueMetric.increment()
 
-//        executorScope.async {
-        executorScope.launch {
+        executorScope.async {
             try {
                 val createdEvent = paymentESService.create {
                     it.create(
@@ -108,12 +84,9 @@ class OrderPayer {
                 }
                 logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
 
-                paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline) {
-                    pending.decrementAndGet()
-                }
+                paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
             } catch (e: Exception) {
                 logger.error("Failed to process payment for order $orderId", e)
-                pending.decrementAndGet()
             }
         }
         counterMetricAfterJob.increment()

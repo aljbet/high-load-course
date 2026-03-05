@@ -84,7 +84,7 @@ class PaymentExternalSystemAdapterImpl(
     private val beforeRlQueueMetric: Counter = Counter.builder("before_rl_queue").register(promRegistry)
     private val scheduler = Executors.newScheduledThreadPool(10)
 
-    override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long, onComplete: () -> Unit) {
+    override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         externalAdapterQueueMetric.increment()
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
@@ -192,8 +192,6 @@ class PaymentExternalSystemAdapterImpl(
                 attemptCall(0)
             } catch (e: Exception) {
                 logger.error("[$accountName] [ERROR] payment=$paymentId", e)
-            } finally {
-                onComplete()
             }
         }
     }
