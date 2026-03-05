@@ -42,7 +42,6 @@ class OrderPayer {
     private lateinit var counterMetricBeforeTick: Counter
     private lateinit var counterMetricAfterTick: Counter
     private lateinit var counterMetricAfterJob: Counter
-    private val pending = AtomicLong(0)
 
     @PostConstruct
     private fun initialize() {

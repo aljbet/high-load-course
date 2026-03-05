@@ -65,8 +65,8 @@ class PaymentExternalSystemAdapterImpl(
         NamedThreadFactory("http-executor"),
         ThreadPoolExecutor.AbortPolicy()
     )
-//    private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
-    private val httpExecutorScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
+//    private val httpExecutorScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val client = HttpClient.newBuilder()
         .executor(Executors.newFixedThreadPool(2000))
@@ -82,7 +82,7 @@ class PaymentExternalSystemAdapterImpl(
     private val externalAdapterQueueMetric: Counter = Counter.builder("external_adapter_queue").register(promRegistry)
     private val beforeSemaphoreQueueMetric: Counter = Counter.builder("before_semaphore_queue").register(promRegistry)
     private val beforeRlQueueMetric: Counter = Counter.builder("before_rl_queue").register(promRegistry)
-    private val scheduler = Executors.newScheduledThreadPool(10)
+    private val scheduler = Executors.newScheduledThreadPool(100)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         externalAdapterQueueMetric.increment()
@@ -186,8 +186,7 @@ class PaymentExternalSystemAdapterImpl(
             }
         }
 
-//        httpExecutorScope.async { attemptCall(0) }
-        httpExecutorScope.launch {
+        httpExecutorScope.async {
             try {
                 attemptCall(0)
             } catch (e: Exception) {
