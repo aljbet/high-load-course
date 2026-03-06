@@ -44,6 +44,9 @@ class OrderPayer {
     private lateinit var executorScope: CoroutineScope
     private lateinit var rateLimiter: RateLimiter
 
+    @Autowired
+    private lateinit var scope: Scope
+
     @PostConstruct
     private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
@@ -75,12 +78,12 @@ class OrderPayer {
 
         executorScope.launch {
             try {
-                val createdEvent = withContext(Dispatchers.IO) {
-                    paymentESService.create {
+                scope.esWriter.submit(paymentId) {
+                    val createdEvent = paymentESService.create {
                         it.create(paymentId, orderId, amount)
                     }
+                    logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
                 }
-                logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
 
                 paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
             } catch (e: Exception) {
