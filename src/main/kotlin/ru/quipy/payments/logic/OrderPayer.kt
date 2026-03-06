@@ -57,6 +57,11 @@ class OrderPayer {
         )
         paymentExecutor.prestartAllCoreThreads()
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
+        val externalServiceRps = 800
+        val slaSeconds = 1.0
+        val processingTimeSeconds = 0.01
+        val safeQueueTimeSeconds = (slaSeconds - processingTimeSeconds) * 0.7
+        val bucketSize = (externalServiceRps * safeQueueTimeSeconds).toInt()
         rateLimiter =
 //            LeakingBucketRateLimiter(
 //                rate = 1000,
@@ -64,9 +69,9 @@ class OrderPayer {
 //                bucketSize = 1000
 //            )
             TokenBucketRateLimiter(
-                rate = 1600,
+                rate = externalServiceRps,
                 window = 1,
-                bucketMaxCapacity = 1500,
+                bucketMaxCapacity = bucketSize,
                 timeUnit = TimeUnit.SECONDS
             )
     }
