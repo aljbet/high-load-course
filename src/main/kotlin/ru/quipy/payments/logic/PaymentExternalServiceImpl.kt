@@ -72,7 +72,7 @@ class PaymentExternalSystemAdapterImpl(
     private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
 
     private val client = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(100))
+        .executor(Executors.newFixedThreadPool(2000))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
@@ -102,15 +102,15 @@ class PaymentExternalSystemAdapterImpl(
         val avgProcMs = requestAverageProcessingTime.toMillis()
 
         suspend fun attemptCall(attempt: Int) {
-//            if (now() > deadline) {
-//                logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId reason=Deadline exceeded")
-//                scope.esWriter.submit(paymentId) {
-//                    paymentESService.update(paymentId) {
-//                        it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
-//                    }
-//                }
-//                return
-//            }
+            if (now() > deadline) {
+                logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId reason=Deadline exceeded")
+                scope.esWriter.submit(paymentId) {
+                    paymentESService.update(paymentId) {
+                        it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
+                    }
+                }
+                return
+            }
 
             val isBeneficial = amount > price * (attempt + 1)
             semaphore.withPermit {
