@@ -70,9 +70,9 @@ class OrderPayer {
 //            )
             TokenBucketRateLimiter(
                 rate = externalServiceRps,
-                window = 1,
+                window = 1000,
                 bucketMaxCapacity = bucketSize,
-                timeUnit = TimeUnit.SECONDS
+                timeUnit = TimeUnit.MILLISECONDS
             )
     }
 
