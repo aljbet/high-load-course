@@ -66,7 +66,7 @@ class OrderPayer {
             TokenBucketRateLimiter(
                 rate = 1600,
                 window = 1,
-                bucketMaxCapacity = 555,
+                bucketMaxCapacity = 1000,
                 timeUnit = TimeUnit.SECONDS
             )
     }
