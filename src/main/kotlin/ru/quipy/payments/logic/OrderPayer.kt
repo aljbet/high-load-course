@@ -47,32 +47,22 @@ class OrderPayer {
     @PostConstruct
     private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
-            150,
-            150,
+            50,
+            50,
             0L,
             TimeUnit.MILLISECONDS,
-            LinkedBlockingQueue(10_000),
+            LinkedBlockingQueue(30_000),
             NamedThreadFactory("payment-submission-executor"),
             CallerBlockingRejectedExecutionHandler()
         )
         paymentExecutor.prestartAllCoreThreads()
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
-        val externalServiceRps = 800
-        val slaSeconds = 1.0
-        val processingTimeSeconds = 0.01
-        val safeQueueTimeSeconds = (slaSeconds - processingTimeSeconds) * 0.7
-        val bucketSize = (externalServiceRps * safeQueueTimeSeconds).toInt()
         rateLimiter =
-//            LeakingBucketRateLimiter(
-//                rate = 1000,
-//                window = Duration.ofMillis(500),
-//                bucketSize = 1000
-//            )
             TokenBucketRateLimiter(
-                rate = externalServiceRps,
-                window = 500,
-                bucketMaxCapacity = bucketSize * 2,
-                timeUnit = TimeUnit.MILLISECONDS
+                rate = 5000,
+                window = 1,
+                bucketMaxCapacity = 3960,
+                timeUnit = TimeUnit.SECONDS
             )
     }
 
