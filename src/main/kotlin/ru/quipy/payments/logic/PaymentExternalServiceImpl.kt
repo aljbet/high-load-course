@@ -7,7 +7,7 @@ import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -50,7 +50,11 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val price = properties.price
-    private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
+    private val retryAfter = 50L
+    private val rateLimiter = SlidingWindowRateLimiter(
+        rateLimitPerSec.toLong(),
+        Duration.ofSeconds(1)
+    )
     private val semaphore = Semaphore(parallelRequests)
 
     private val httpExecutor = ThreadPoolExecutor(
@@ -62,7 +66,7 @@ class PaymentExternalSystemAdapterImpl(
         NamedThreadFactory("http-executor"),
         CallerBlockingRejectedExecutionHandler()
     )
-    private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher());
+    private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
 
     private val client = HttpClient.newBuilder()
         .executor(Executors.newFixedThreadPool(100))
@@ -130,10 +134,10 @@ class PaymentExternalSystemAdapterImpl(
 
                     if (retriableCode && attempt < maxRetries && timeLeft > avgProcMs && isBeneficial) {
                         retryCounterMetric.increment()
-                        val retryAfterMs = (500L * (1L shl attempt))
+                        val retryAfterMs = (retryAfter * (1L shl attempt))
                         logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $retryAfterMs ms.")
                         scheduler.schedule(
-                            { httpExecutorScope.async { attemptCall(attempt + 1) } },
+                            { httpExecutorScope.launch { attemptCall(attempt + 1) } },
                             retryAfterMs,
                             TimeUnit.MILLISECONDS
                         )
@@ -150,11 +154,11 @@ class PaymentExternalSystemAdapterImpl(
                     val isTimeout = ex is SocketTimeoutException
                     val timeLeft = deadline - now()
 
-                    if (isTimeout && attempt < maxRetries && timeLeft > avgProcMs + 500 && isBeneficial) {
+                    if (isTimeout && attempt < maxRetries && timeLeft > avgProcMs + retryAfter && isBeneficial) {
                         retryCounterMetric.increment()
-                        val retryAfterMs = (500L * (1L shl attempt))
+                        val retryAfterMs = (retryAfter * (1L shl attempt))
                         scheduler.schedule(
-                            { httpExecutorScope.async { attemptCall(attempt + 1) } },
+                            { httpExecutorScope.launch { attemptCall(attempt + 1) } },
                             retryAfterMs,
                             TimeUnit.MILLISECONDS
                         )
@@ -169,7 +173,7 @@ class PaymentExternalSystemAdapterImpl(
             }
         }
 
-        httpExecutorScope.async { attemptCall(0) }
+        httpExecutorScope.launch { attemptCall(0) }
     }
 
     override fun price() = properties.price

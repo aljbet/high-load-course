@@ -3,7 +3,7 @@ package ru.quipy.payments.logic
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
@@ -61,19 +61,19 @@ class OrderPayer {
             .minOf { properties -> properties.parallelRequests }
         rateLimiter =
             LeakingBucketRateLimiter(
-                rate = 1100,
+                rate = 4000,
                 window = Duration.ofMillis(1000),
-                bucketSize = 20000
+                bucketSize = 5000
             )
     }
 
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(10000)
+            throw TooManyRequestsError(50)
         }
 
-        executorScope.async {
+        executorScope.launch {
             val createdEvent = paymentESService.create {
                 it.create(
                     paymentId,

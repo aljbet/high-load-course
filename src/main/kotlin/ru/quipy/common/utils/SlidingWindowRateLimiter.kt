@@ -32,16 +32,16 @@ class SlidingWindowRateLimiter(
         }
     }
 
-    fun tickBlocking() {
+    suspend fun tickBlocking() {
         while (!tick()) {
-            Thread.sleep(10)
+            delay(10)
         }
     }
 
-    fun tickBlocking(timeout: Duration) {
+    suspend fun tickBlocking(timeout: Duration) {
         val deadline = Clock.systemUTC().instant().plus(timeout)
         while (!tick() && Clock.systemUTC().instant().isBefore(deadline)) {
-            Thread.sleep(10)
+            delay(10)
         }
     }
 
