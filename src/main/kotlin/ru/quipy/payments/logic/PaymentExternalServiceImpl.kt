@@ -13,6 +13,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.NamedThreadFactory
+import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
@@ -50,15 +51,15 @@ class PaymentExternalSystemAdapterImpl(
     private val parallelRequests = 2000
     private val price = 30
     private val rateLimiter =
-//        SlidingWindowRateLimiter(
-//            rateLimitPerSec.toLong(),
-//            Duration.ofSeconds(1)
-//        )
-        TokenBucketRateLimiter(
-            rate = 800,
-            bucketMaxCapacity = 560,
-            window = 1000,
+            SlidingWindowRateLimiter(
+            rateLimitPerSec.toLong(),
+            Duration.ofSeconds(1)
         )
+//        TokenBucketRateLimiter(
+//            rate = 800,
+//            bucketMaxCapacity = 560,
+//            window = 1000,
+//        )
     private val semaphore = Semaphore(parallelRequests)
 
     private val httpExecutor = ThreadPoolExecutor(
@@ -118,7 +119,7 @@ class PaymentExternalSystemAdapterImpl(
             beforeSemaphoreQueueMetric.increment()
             semaphore.withPermit {
                 beforeRlQueueMetric.increment()
-                rateLimiter.tick()
+                rateLimiter.tickBlocking()
 
                 val request = HttpRequest.newBuilder()
                     .uri(URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"))
