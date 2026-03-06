@@ -36,7 +36,8 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
-    promRegistry: MeterRegistry
+    private val paymentEventWriter: PaymentEventWriter,
+    promRegistry: MeterRegistry,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -89,8 +90,10 @@ class PaymentExternalSystemAdapterImpl(
 
         // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
         // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
-        paymentESService.update(paymentId) {
-            it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+        paymentEventWriter.submit(paymentId) {
+            paymentESService.update(paymentId) {
+                it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+            }
         }
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
@@ -122,8 +125,10 @@ class PaymentExternalSystemAdapterImpl(
 
                     if (success) {
                         logger.warn("[$accountName] [OK] txId=$transactionId payment=$paymentId")
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(true, now(), transactionId, reason = body.message)
+                        paymentEventWriter.submit(paymentId) {
+                            paymentESService.update(paymentId) {
+                                it.logProcessing(true, now(), transactionId, reason = body.message)
+                            }
                         }
                         requestLatency.record((now() - start).toDouble())
                         return
@@ -146,8 +151,10 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
+                    paymentEventWriter.submit(paymentId) {
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
+                        }
                     }
                     requestLatency.record((now() - start).toDouble())
                 } catch (ex: Exception) {
@@ -166,8 +173,10 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", ex)
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = ex.message)
+                    paymentEventWriter.submit(paymentId) {
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(false, now(), transactionId, reason = ex.message)
+                        }
                     }
                 }
             }

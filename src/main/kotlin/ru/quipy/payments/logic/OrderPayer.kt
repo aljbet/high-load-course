@@ -33,6 +33,9 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
+    @Autowired
+    lateinit var paymentEventWriter: PaymentEventWriter
+
     private lateinit var paymentExecutor: ThreadPoolExecutor
     private lateinit var executorScope: CoroutineScope
     private var averageProcessingTime: Long = 0
@@ -74,14 +77,16 @@ class OrderPayer {
         }
 
         executorScope.launch {
-            val createdEvent = paymentESService.create {
-                it.create(
-                    paymentId,
-                    orderId,
-                    amount
-                )
+            paymentEventWriter.submit(paymentId) {
+                val createdEvent = paymentESService.create {
+                    it.create(
+                        paymentId,
+                        orderId,
+                        amount
+                    )
+                }
+                logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
             }
-            logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
 
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
         }
