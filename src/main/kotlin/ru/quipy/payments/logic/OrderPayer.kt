@@ -58,17 +58,17 @@ class OrderPayer {
         paymentExecutor.prestartAllCoreThreads()
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
         rateLimiter =
-//            LeakingBucketRateLimiter(
-//                rate = 1000,
-//                window = Duration.ofMillis(500),
-//                bucketSize = 5000
-//            )
-            TokenBucketRateLimiter(
-                rate = 1600,
-                window = 1,
-                bucketMaxCapacity = 5000,
-                timeUnit = TimeUnit.SECONDS
+            LeakingBucketRateLimiter(
+                rate = 1000,
+                window = Duration.ofMillis(500),
+                bucketSize = 2000
             )
+//            TokenBucketRateLimiter(
+//                rate = 1600,
+//                window = 1,
+//                bucketMaxCapacity = 5000,
+//                timeUnit = TimeUnit.SECONDS
+//            )
     }
 
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
