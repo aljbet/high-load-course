@@ -6,14 +6,13 @@ import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
@@ -48,10 +47,11 @@ class PaymentExternalSystemAdapterImpl(
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
-    private val requestAverageProcessingTime = Duration.ofMillis(10)
-    private val rateLimitPerSec = 5000
-    private val parallelRequests = 2000
-    private val price = 30
+    private val requestAverageProcessingTime = properties.averageProcessingTime
+    private val rateLimitPerSec = properties.rateLimitPerSec
+    private val parallelRequests = properties.parallelRequests
+    private val price = properties.price
+    private val retryAfter = 50L
     private val rateLimiter =
         SlidingWindowRateLimiter(
             rateLimitPerSec.toLong(),
@@ -61,18 +61,18 @@ class PaymentExternalSystemAdapterImpl(
     private val semaphore = Semaphore(parallelRequests)
 
     private val httpExecutor = ThreadPoolExecutor(
-        1000,
-        1000,
+        16,
+        16,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(),
+        LinkedBlockingQueue(10_000),
         NamedThreadFactory("http-executor"),
-        ThreadPoolExecutor.AbortPolicy()
+        CallerBlockingRejectedExecutionHandler()
     )
     private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
 
     private val client = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(2000))
+        .executor(Executors.newFixedThreadPool(100))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
@@ -82,7 +82,7 @@ class PaymentExternalSystemAdapterImpl(
         .register(promRegistry)
 
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
-    private val scheduler = Executors.newScheduledThreadPool(150)
+    private val scheduler = Executors.newScheduledThreadPool(100)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -98,19 +98,19 @@ class PaymentExternalSystemAdapterImpl(
         }
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
         val start = now()
-        val maxRetries = 10
+        val maxRetries = 1
         val avgProcMs = requestAverageProcessingTime.toMillis()
 
         suspend fun attemptCall(attempt: Int) {
-            if (now() > deadline) {
-                logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId reason=Deadline exceeded")
-                scope.esWriter.submit(paymentId) {
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
-                    }
-                }
-                return
-            }
+//            if (now() > deadline) {
+//                logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId reason=Deadline exceeded")
+//                scope.esWriter.submit(paymentId) {
+//                    paymentESService.update(paymentId) {
+//                        it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
+//                    }
+//                }
+//                return
+//            }
 
             val isBeneficial = amount > price * (attempt + 1)
             semaphore.withPermit {
@@ -149,7 +149,7 @@ class PaymentExternalSystemAdapterImpl(
 
                     if (retriableCode && attempt < maxRetries && timeLeft > avgProcMs && isBeneficial) {
                         retryCounterMetric.increment()
-                        val retryAfterMs = (50L * (1L shl attempt))
+                        val retryAfterMs = (retryAfter * (1L shl attempt))
                         logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $retryAfterMs ms.")
                         scheduler.schedule(
                             { httpExecutorScope.launch { attemptCall(attempt + 1) } },
@@ -171,9 +171,9 @@ class PaymentExternalSystemAdapterImpl(
                     val isTimeout = ex is SocketTimeoutException
                     val timeLeft = deadline - now()
 
-                    if (isTimeout && attempt < maxRetries && timeLeft > avgProcMs + 50 && isBeneficial) {
+                    if (isTimeout && attempt < maxRetries && timeLeft > avgProcMs + retryAfter && isBeneficial) {
                         retryCounterMetric.increment()
-                        val retryAfterMs = (50L * (1L shl attempt))
+                        val retryAfterMs = (retryAfter * (1L shl attempt))
                         scheduler.schedule(
                             { httpExecutorScope.launch { attemptCall(attempt + 1) } },
                             retryAfterMs,

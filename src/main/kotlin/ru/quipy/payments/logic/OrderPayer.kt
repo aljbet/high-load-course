@@ -3,16 +3,13 @@ package ru.quipy.payments.logic
 import io.micrometer.core.instrument.MeterRegistry
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
-import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.RateLimiter
 import ru.quipy.common.utils.TokenBucketRateLimiter
@@ -22,7 +19,6 @@ import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.time.Duration
 
 @Service
 class OrderPayer {
@@ -77,18 +73,14 @@ class OrderPayer {
         }
 
         executorScope.launch {
-            try {
-                scope.esWriter.submit(paymentId) {
-                    val createdEvent = paymentESService.create {
-                        it.create(paymentId, orderId, amount)
-                    }
-                    logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
+            scope.esWriter.submit(paymentId) {
+                val createdEvent = paymentESService.create {
+                    it.create(paymentId, orderId, amount)
                 }
-
-                paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
-            } catch (e: Exception) {
-                logger.error("Failed to process payment for order $orderId", e)
+                logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
             }
+
+            paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
         }
         return createdAt
     }
