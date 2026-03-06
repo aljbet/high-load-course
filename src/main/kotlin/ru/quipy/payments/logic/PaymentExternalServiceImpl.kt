@@ -51,11 +51,12 @@ class PaymentExternalSystemAdapterImpl(
     private val parallelRequests = 2000
     private val price = 30
     private val rateLimiter =
-            SlidingWindowRateLimiter(
+        SlidingWindowRateLimiter(
             rateLimitPerSec.toLong(),
             Duration.ofSeconds(1)
         )
-//        TokenBucketRateLimiter(
+
+    //        TokenBucketRateLimiter(
 //            rate = 800,
 //            bucketMaxCapacity = 560,
 //            window = 1000,
@@ -93,10 +94,11 @@ class PaymentExternalSystemAdapterImpl(
 
         // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
         // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
-        paymentESService.update(paymentId) {
-            it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+        httpExecutorScope.async {
+            paymentESService.update(paymentId) {
+                it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+            }
         }
-
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
         val start = now()
         val maxRetries = 1
@@ -105,8 +107,10 @@ class PaymentExternalSystemAdapterImpl(
         suspend fun attemptCall(attempt: Int) {
             if (now() > deadline) {
                 logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId reason=Deadline exceeded")
-                paymentESService.update(paymentId) {
-                    it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
+                httpExecutorScope.async {
+                    paymentESService.update(paymentId) {
+                        it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
+                    }
                 }
                 return
             }
@@ -134,8 +138,10 @@ class PaymentExternalSystemAdapterImpl(
 
                     if (success) {
                         logger.warn("[$accountName] [OK] txId=$transactionId payment=$paymentId")
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(true, now(), transactionId, reason = body.message)
+                        httpExecutorScope.async {
+                            paymentESService.update(paymentId) {
+                                it.logProcessing(true, now(), transactionId, reason = body.message)
+                            }
                         }
                         requestLatency.record((now() - start).toDouble())
                         return
@@ -158,8 +164,10 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
+                    httpExecutorScope.async {
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
+                        }
                     }
                     requestLatency.record((now() - start).toDouble())
                 } catch (ex: Exception) {
@@ -178,8 +186,10 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", ex)
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = ex.message)
+                    httpExecutorScope.async {
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(false, now(), transactionId, reason = ex.message)
+                        }
                     }
                 }
             }
