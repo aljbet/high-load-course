@@ -13,8 +13,8 @@ import java.util.UUID
 class PaymentEventWriter() {
     private val logger = LoggerFactory.getLogger(PaymentEventWriter::class.java)
 
-    private val shards = 64
-    private val queuePerShard = 8192
+    private val shards = 400
+    private val queuePerShard = 20000
 
     private val channels = Array(shards) { Channel<suspend () -> Unit>(queuePerShard) }
 
