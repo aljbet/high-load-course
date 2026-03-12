@@ -15,7 +15,7 @@ class PaymentEventWriter() {
     private val logger = LoggerFactory.getLogger(PaymentEventWriter::class.java)
 
     private val shards = 400
-    private val queuePerShard = 20000
+    private val queuePerShard = 5000
 
     private val channels = Array(shards) { Channel<suspend () -> Unit>(queuePerShard) }
 
