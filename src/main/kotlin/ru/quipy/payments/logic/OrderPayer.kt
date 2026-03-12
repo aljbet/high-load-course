@@ -60,8 +60,8 @@ class OrderPayer {
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
         rateLimiter =
             LeakingBucketRateLimiter(
-                rate = 5000,
-                window = Duration.ofMillis(1000),
+                rate = 2500,
+                window = Duration.ofMillis(500),
                 bucketSize = 3000
             )
     }
