@@ -8,6 +8,7 @@ import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import java.util.UUID
+import kotlin.math.abs
 
 @Component
 class PaymentEventWriter() {
@@ -22,7 +23,7 @@ class PaymentEventWriter() {
 
     init {
         repeat(shards) { shard ->
-            scope.launch {
+            scope.launch(Dispatchers.IO) {
                 for (action in channels[shard]) {
                     try {
                         action()
@@ -34,13 +35,13 @@ class PaymentEventWriter() {
         }
     }
 
-    suspend fun submit(paymentId: UUID, block: () -> Unit) {
+    suspend fun submit(paymentId: UUID, block: suspend () -> Unit) {
         val shard = shardIndex(paymentId)
         channels[shard].send(block)
     }
 
     private fun shardIndex(id: UUID): Int {
         val h = id.mostSignificantBits xor id.leastSignificantBits
-        return h.toInt() % shards
+        return abs(h.toInt()) % shards
     }
 }
