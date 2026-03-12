@@ -5,10 +5,10 @@ import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.slf4j.LoggerFactory
@@ -36,7 +36,8 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
-    promRegistry: MeterRegistry
+    private val paymentEventWriter: PaymentEventWriter,
+    promRegistry: MeterRegistry,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -50,7 +51,11 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val price = properties.price
-    private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
+    private val retryAfter = 50L
+    private val rateLimiter = SlidingWindowRateLimiter(
+        rateLimitPerSec.toLong(),
+        Duration.ofSeconds(1)
+    )
     private val semaphore = Semaphore(parallelRequests)
 
     private val httpExecutor = ThreadPoolExecutor(
@@ -62,10 +67,10 @@ class PaymentExternalSystemAdapterImpl(
         NamedThreadFactory("http-executor"),
         CallerBlockingRejectedExecutionHandler()
     )
-    private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher());
+    private val httpExecutorScope = CoroutineScope(httpExecutor.asCoroutineDispatcher())
 
     private val client = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(100))
+        .executor(Executors.newFixedThreadPool(2000))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
@@ -85,8 +90,10 @@ class PaymentExternalSystemAdapterImpl(
 
         // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
         // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
-        paymentESService.update(paymentId) {
-            it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+        paymentEventWriter.submit(paymentId) {
+            paymentESService.update(paymentId) {
+                it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+            }
         }
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
@@ -118,8 +125,10 @@ class PaymentExternalSystemAdapterImpl(
 
                     if (success) {
                         logger.warn("[$accountName] [OK] txId=$transactionId payment=$paymentId")
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(true, now(), transactionId, reason = body.message)
+                        paymentEventWriter.submit(paymentId) {
+                            paymentESService.update(paymentId) {
+                                it.logProcessing(true, now(), transactionId, reason = body.message)
+                            }
                         }
                         requestLatency.record((now() - start).toDouble())
                         return
@@ -130,10 +139,10 @@ class PaymentExternalSystemAdapterImpl(
 
                     if (retriableCode && attempt < maxRetries && timeLeft > avgProcMs && isBeneficial) {
                         retryCounterMetric.increment()
-                        val retryAfterMs = (500L * (1L shl attempt))
+                        val retryAfterMs = (retryAfter * (1L shl attempt))
                         logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $retryAfterMs ms.")
                         scheduler.schedule(
-                            { httpExecutorScope.async { attemptCall(attempt + 1) } },
+                            { httpExecutorScope.launch { attemptCall(attempt + 1) } },
                             retryAfterMs,
                             TimeUnit.MILLISECONDS
                         )
@@ -142,19 +151,21 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
+                    paymentEventWriter.submit(paymentId) {
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
+                        }
                     }
                     requestLatency.record((now() - start).toDouble())
                 } catch (ex: Exception) {
                     val isTimeout = ex is SocketTimeoutException
                     val timeLeft = deadline - now()
 
-                    if (isTimeout && attempt < maxRetries && timeLeft > avgProcMs + 500 && isBeneficial) {
+                    if (isTimeout && attempt < maxRetries && timeLeft > avgProcMs + retryAfter && isBeneficial) {
                         retryCounterMetric.increment()
-                        val retryAfterMs = (500L * (1L shl attempt))
+                        val retryAfterMs = (retryAfter * (1L shl attempt))
                         scheduler.schedule(
-                            { httpExecutorScope.async { attemptCall(attempt + 1) } },
+                            { httpExecutorScope.launch { attemptCall(attempt + 1) } },
                             retryAfterMs,
                             TimeUnit.MILLISECONDS
                         )
@@ -162,14 +173,16 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", ex)
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = ex.message)
+                    paymentEventWriter.submit(paymentId) {
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(false, now(), transactionId, reason = ex.message)
+                        }
                     }
                 }
             }
         }
 
-        httpExecutorScope.async { attemptCall(0) }
+        httpExecutorScope.launch { attemptCall(0) }
     }
 
     override fun price() = properties.price

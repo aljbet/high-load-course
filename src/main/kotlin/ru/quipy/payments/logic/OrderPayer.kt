@@ -3,7 +3,7 @@ package ru.quipy.payments.logic
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
@@ -33,55 +33,48 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
+    @Autowired
+    lateinit var paymentEventWriter: PaymentEventWriter
+
     private lateinit var paymentExecutor: ThreadPoolExecutor
     private lateinit var executorScope: CoroutineScope
-    private var averageProcessingTime: Long = 0
-    private var rateLimitPerSec: Int = 0
-    private var parallelRequests: Int = 0
 
     private lateinit var rateLimiter: RateLimiter
 
     @PostConstruct
     private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
-            16,
-            16,
+            200,
+            200,
             0L,
             TimeUnit.MILLISECONDS,
             LinkedBlockingQueue(10_000),
             NamedThreadFactory("payment-submission-executor"),
             CallerBlockingRejectedExecutionHandler()
         )
+        paymentExecutor.prestartAllCoreThreads()
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
-        averageProcessingTime = paymentService.getAllAccountProperties()
-            .maxOf { properties -> properties.averageProcessingTime.toMillis() }
-        rateLimitPerSec = paymentService.getAllAccountProperties()
-            .minOf { properties -> properties.rateLimitPerSec }
-        parallelRequests = paymentService.getAllAccountProperties()
-            .minOf { properties -> properties.parallelRequests }
         rateLimiter =
             LeakingBucketRateLimiter(
-                rate = 1100,
+                rate = 5000,
                 window = Duration.ofMillis(1000),
-                bucketSize = 20000
+                bucketSize = 5000
             )
     }
 
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(10000)
+            throw TooManyRequestsError(50)
         }
 
-        executorScope.async {
-            val createdEvent = paymentESService.create {
-                it.create(
-                    paymentId,
-                    orderId,
-                    amount
-                )
+        executorScope.launch {
+            paymentEventWriter.submit(paymentId) {
+                val createdEvent = paymentESService.create {
+                    it.create(paymentId, orderId, amount)
+                }
+                logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
             }
-            logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
 
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
         }
