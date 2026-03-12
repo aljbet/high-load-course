@@ -14,8 +14,8 @@ import kotlin.math.abs
 class PaymentEventWriter() {
     private val logger = LoggerFactory.getLogger(PaymentEventWriter::class.java)
 
-    private val shards = 400
-    private val queuePerShard = 5000
+    private val shards = 500
+    private val queuePerShard = 10000
 
     private val channels = Array(shards) { Channel<suspend () -> Unit>(queuePerShard) }
 
