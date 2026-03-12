@@ -12,6 +12,7 @@ import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.RateLimiter
+import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.time.Duration
@@ -63,12 +64,10 @@ class OrderPayer {
             .minOf { properties -> properties.rateLimitPerSec }
         parallelRequests = paymentService.getAllAccountProperties()
             .minOf { properties -> properties.parallelRequests }
-        rateLimiter =
-            LeakingBucketRateLimiter(
-                rate = 5000,
-                window = Duration.ofMillis(1000),
-                bucketSize = 5000
-            )
+        rateLimiter = SlidingWindowRateLimiter(
+            5000,
+            Duration.ofSeconds(1)
+        )
     }
 
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
