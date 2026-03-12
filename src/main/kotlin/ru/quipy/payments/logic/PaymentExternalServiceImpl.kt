@@ -37,7 +37,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentProviderHostPort: String,
     private val token: String,
     promRegistry: MeterRegistry,
-    private val scope: Scope,
+    private val paymentEventWriter: PaymentEventWriter,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -91,7 +91,7 @@ class PaymentExternalSystemAdapterImpl(
 
         // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
         // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
-        scope.esWriter.submit(paymentId) {
+        paymentEventWriter.submit(paymentId) {
             paymentESService.update(paymentId) {
                 it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
             }
@@ -104,7 +104,7 @@ class PaymentExternalSystemAdapterImpl(
         suspend fun attemptCall(attempt: Int) {
             if (now() > deadline) {
                 logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId reason=Deadline exceeded")
-                scope.esWriter.submit(paymentId) {
+                paymentEventWriter.submit(paymentId) {
                     paymentESService.update(paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
                     }
@@ -135,7 +135,7 @@ class PaymentExternalSystemAdapterImpl(
 
                     if (success) {
                         logger.warn("[$accountName] [OK] txId=$transactionId payment=$paymentId")
-                        scope.esWriter.submit(paymentId) {
+                        paymentEventWriter.submit(paymentId) {
                             paymentESService.update(paymentId) {
                                 it.logProcessing(true, now(), transactionId, reason = body.message)
                             }
@@ -161,7 +161,7 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
-                    scope.esWriter.submit(paymentId) {
+                    paymentEventWriter.submit(paymentId) {
                         paymentESService.update(paymentId) {
                             it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
                         }
@@ -183,7 +183,7 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", ex)
-                    scope.esWriter.submit(paymentId) {
+                    paymentEventWriter.submit(paymentId) {
                         paymentESService.update(paymentId) {
                             it.logProcessing(false, now(), transactionId, reason = ex.message)
                         }

@@ -38,7 +38,7 @@ class PaymentAccountsConfig {
     lateinit var allowedAccounts: List<String>
 
     @Autowired
-    lateinit var scope: Scope
+    lateinit var paymentEventWriter: PaymentEventWriter
 
     @Bean
     fun accountAdapters(paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>, promRegistry: MeterRegistry): List<PaymentExternalSystemAdapter> {
@@ -64,7 +64,7 @@ class PaymentAccountsConfig {
                     paymentProviderHostPort,
                     token,
                     promRegistry,
-                    scope,
+                    paymentEventWriter,
                 )
             }
     }

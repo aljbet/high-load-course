@@ -41,7 +41,7 @@ class OrderPayer {
     private lateinit var rateLimiter: RateLimiter
 
     @Autowired
-    private lateinit var scope: Scope
+    private lateinit var paymentEventWriter: PaymentEventWriter
 
     @PostConstruct
     private fun initialize() {
@@ -73,7 +73,7 @@ class OrderPayer {
         }
 
         executorScope.launch {
-            scope.esWriter.submit(paymentId) {
+            paymentEventWriter.submit(paymentId) {
                 val createdEvent = paymentESService.create {
                     it.create(paymentId, orderId, amount)
                 }
