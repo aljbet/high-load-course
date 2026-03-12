@@ -12,7 +12,6 @@ import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.RateLimiter
-import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.time.Duration
@@ -39,17 +38,14 @@ class OrderPayer {
 
     private lateinit var paymentExecutor: ThreadPoolExecutor
     private lateinit var executorScope: CoroutineScope
-    private var averageProcessingTime: Long = 0
-    private var rateLimitPerSec: Int = 0
-    private var parallelRequests: Int = 0
 
     private lateinit var rateLimiter: RateLimiter
 
     @PostConstruct
     private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
-            50,
-            50,
+            200,
+            200,
             0L,
             TimeUnit.MILLISECONDS,
             LinkedBlockingQueue(10_000),
@@ -58,16 +54,12 @@ class OrderPayer {
         )
         paymentExecutor.prestartAllCoreThreads()
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
-        averageProcessingTime = paymentService.getAllAccountProperties()
-            .maxOf { properties -> properties.averageProcessingTime.toMillis() }
-        rateLimitPerSec = paymentService.getAllAccountProperties()
-            .minOf { properties -> properties.rateLimitPerSec }
-        parallelRequests = paymentService.getAllAccountProperties()
-            .minOf { properties -> properties.parallelRequests }
-        rateLimiter = SlidingWindowRateLimiter(
-            5000,
-            Duration.ofSeconds(1)
-        )
+        rateLimiter =
+            LeakingBucketRateLimiter(
+                rate = 5000,
+                window = Duration.ofMillis(1000),
+                bucketSize = 5000
+            )
     }
 
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
