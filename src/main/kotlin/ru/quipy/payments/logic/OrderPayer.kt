@@ -52,7 +52,7 @@ class OrderPayer {
             50,
             0L,
             TimeUnit.MILLISECONDS,
-            LinkedBlockingQueue(30_000),
+            LinkedBlockingQueue(5_000),
             NamedThreadFactory("payment-submission-executor"),
             CallerBlockingRejectedExecutionHandler()
         )
@@ -60,9 +60,9 @@ class OrderPayer {
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
         rateLimiter =
             LeakingBucketRateLimiter(
-                rate = 2500,
-                window = Duration.ofMillis(500),
-                bucketSize = 3000
+                rate = 5000,
+                window = Duration.ofMillis(1000),
+                bucketSize = 5000
             )
     }
 
