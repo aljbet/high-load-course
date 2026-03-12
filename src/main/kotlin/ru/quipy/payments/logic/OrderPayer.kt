@@ -10,11 +10,13 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
+import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.RateLimiter
 import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -57,11 +59,10 @@ class OrderPayer {
         paymentExecutor.prestartAllCoreThreads()
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
         rateLimiter =
-            TokenBucketRateLimiter(
+            LeakingBucketRateLimiter(
                 rate = 5000,
-                window = 1,
-                bucketMaxCapacity = 3960,
-                timeUnit = TimeUnit.SECONDS
+                window = Duration.ofMillis(1000),
+                bucketSize = 5000
             )
     }
 
