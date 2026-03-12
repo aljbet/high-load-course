@@ -1,6 +1,5 @@
 package ru.quipy.payments.logic
 
-import io.micrometer.core.instrument.MeterRegistry
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -13,7 +12,6 @@ import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.RateLimiter
-import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.time.Duration
@@ -35,9 +33,6 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
-    @Autowired
-    private lateinit var promRegistry: MeterRegistry
-
     private lateinit var paymentExecutor: ThreadPoolExecutor
     private lateinit var executorScope: CoroutineScope
     private lateinit var rateLimiter: RateLimiter
@@ -48,11 +43,11 @@ class OrderPayer {
     @PostConstruct
     private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
-            50,
-            50,
+            200,
+            200,
             0L,
             TimeUnit.MILLISECONDS,
-            LinkedBlockingQueue(5_000),
+            LinkedBlockingQueue(10_000),
             NamedThreadFactory("payment-submission-executor"),
             CallerBlockingRejectedExecutionHandler()
         )
