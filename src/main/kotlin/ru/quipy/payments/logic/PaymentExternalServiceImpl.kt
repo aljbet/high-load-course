@@ -7,10 +7,13 @@ import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.future.asDeferred
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.NamedThreadFactory
@@ -81,6 +84,8 @@ class PaymentExternalSystemAdapterImpl(
         .register(promRegistry)
 
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
+    private val hedgeCounterMetric: Counter = Counter.builder("hedge_counter").register(promRegistry)
+    private val hedgeDelayMs = requestAverageProcessingTime.toMillis()
     private val scheduler = Executors.newScheduledThreadPool(100)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -112,7 +117,22 @@ class PaymentExternalSystemAdapterImpl(
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build()
                 try {
-                    val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
+                    val firstDeferred = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
+                    val httpResponse = withTimeoutOrNull(hedgeDelayMs) { firstDeferred.await() }
+                        ?: run {
+                            hedgeCounterMetric.increment()
+                            logger.warn("[$accountName] [HEDGE] txId=$transactionId payment=$paymentId — sending hedged request")
+                            if (rateLimiter.tick()) {
+                                val hedgeDeferred = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
+                                select {
+                                    firstDeferred.onAwait { it }
+                                    hedgeDeferred.onAwait { it }
+                                }
+                            } else {
+                                firstDeferred.await()
+                            }
+                        }
+                    val response = httpResponse
                     val code = response.statusCode()
                     val body = try {
                         mapper.readValue(response.body(), ExternalSysResponse::class.java)
