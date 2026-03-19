@@ -54,7 +54,7 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val price = properties.price
-    private val retryAfter = 50L
+    private val retryAfter = 100L
     private val rateLimiter = SlidingWindowRateLimiter(
         rateLimitPerSec.toLong(),
         Duration.ofSeconds(1)
@@ -77,23 +77,20 @@ class PaymentExternalSystemAdapterImpl(
         .version(HttpClient.Version.HTTP_2)
         .build()
 
-
     private val requestLatency = DistributionSummary
         .builder("request_latency")
         .publishPercentiles(0.95)
         .register(promRegistry)
 
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
-    private val hedgeCounterMetric: Counter = Counter.builder("hedge_counter").register(promRegistry)
-    private val hedgeDelayMs = requestAverageProcessingTime.toMillis()
+    private val hedgeDelayMs = 1000L
     private val scheduler = Executors.newScheduledThreadPool(100)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
         val transactionId = UUID.randomUUID()
-        val uri =
-            URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
+        val uri = URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
 
         // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
         // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
@@ -105,7 +102,7 @@ class PaymentExternalSystemAdapterImpl(
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
         val start = now()
-        val maxRetries = 5
+        val maxRetries = 3
         val avgProcMs = requestAverageProcessingTime.toMillis()
 
         suspend fun attemptCall(attempt: Int) {
@@ -195,19 +192,20 @@ class PaymentExternalSystemAdapterImpl(
                 if (rateLimiter.tick()) {
                     val hedgeDeferred = send(uri, idempotencyKey)
                     select {
-                        firstDeferred.onAwait { it }
-                        hedgeDeferred.onAwait { it }
+                        firstDeferred.onAwait { logger.info("[HEDGE] first"); it }
+                        hedgeDeferred.onAwait { logger.info("[HEDGE] second"); it }
                     }
                 } else {
                     firstDeferred.await()
                 }
             }
+//        return firstDeferred.await()
     }
 
     fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
         val request = HttpRequest.newBuilder()
             .uri(uri)
-            .timeout(Duration.ofMillis(1500))   // read timeout
+            .timeout(Duration.ofMillis(15000))   // read timeout
             .header("x-idempotency-key", idempotencyKey)
             .POST(HttpRequest.BodyPublishers.noBody())
             .build()
