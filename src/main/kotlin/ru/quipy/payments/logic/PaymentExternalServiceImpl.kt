@@ -119,23 +119,23 @@ class PaymentExternalSystemAdapterImpl(
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build()
                 try {
-                    val firstDeferred = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
-                    val response = withTimeoutOrNull(hedgeDelayMs) { firstDeferred.await() }
-                        ?: run {
-                            hedgeCounterMetric.increment()
-                            logger.warn("[$accountName] [HEDGE] txId=$transactionId payment=$paymentId — sending hedged request")
-                            if (rateLimiter.tick()) {
-                                val hedgeDeferred =
-                                    client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
-                                select {
-                                    firstDeferred.onAwait { hedgeDeferred.cancel(); it }
-                                    hedgeDeferred.onAwait { firstDeferred.cancel(); it }
-                                }
-                            } else {
-                                firstDeferred.await()
-                            }
-                        }
-//                    val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
+//                    val firstDeferred = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
+//                    val response = withTimeoutOrNull(hedgeDelayMs) { firstDeferred.await() }
+//                        ?: run {
+//                            hedgeCounterMetric.increment()
+//                            logger.warn("[$accountName] [HEDGE] txId=$transactionId payment=$paymentId — sending hedged request")
+//                            if (rateLimiter.tick()) {
+//                                val hedgeDeferred =
+//                                    client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
+//                                select {
+//                                    firstDeferred.onAwait { hedgeDeferred.cancel(); it }
+//                                    hedgeDeferred.onAwait { firstDeferred.cancel(); it }
+//                                }
+//                            } else {
+//                                firstDeferred.await()
+//                            }
+//                        }
+                    val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
                     val code = response.statusCode()
                     val body = try {
                         mapper.readValue(response.body(), ExternalSysResponse::class.java)
