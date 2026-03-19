@@ -93,6 +93,7 @@ class PaymentExternalSystemAdapterImpl(
 
         val transactionId = UUID.randomUUID()
         val idempotencyKey = UUID.randomUUID().toString()
+        val uri = URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
 
         // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
         // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
@@ -112,30 +113,8 @@ class PaymentExternalSystemAdapterImpl(
             semaphore.withPermit {
                 rateLimiter.tickBlocking()
 
-                val request = HttpRequest.newBuilder()
-                    .uri(URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"))
-                    .timeout(Duration.ofMillis(1500))   // read timeout
-                    .header("x-idempotency-key", idempotencyKey)
-                    .POST(HttpRequest.BodyPublishers.noBody())
-                    .build()
                 try {
-//                    val firstDeferred = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
-//                    val response = withTimeoutOrNull(hedgeDelayMs) { firstDeferred.await() }
-//                        ?: run {
-//                            hedgeCounterMetric.increment()
-//                            logger.warn("[$accountName] [HEDGE] txId=$transactionId payment=$paymentId — sending hedged request")
-//                            if (rateLimiter.tick()) {
-//                                val hedgeDeferred =
-//                                    client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
-//                                select {
-//                                    firstDeferred.onAwait { hedgeDeferred.cancel(); it }
-//                                    hedgeDeferred.onAwait { firstDeferred.cancel(); it }
-//                                }
-//                            } else {
-//                                firstDeferred.await()
-//                            }
-//                        }
-                    val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
+                    val response = send(uri, idempotencyKey)
                     val code = response.statusCode()
                     val body = try {
                         mapper.readValue(response.body(), ExternalSysResponse::class.java)
@@ -206,6 +185,16 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         httpExecutorScope.launch { attemptCall(0) }
+    }
+
+    suspend fun send(uri: URI, idempotencyKey: String): HttpResponse<String> {
+        val request = HttpRequest.newBuilder()
+            .uri(uri)
+            .timeout(Duration.ofMillis(1500))   // read timeout
+            .header("x-idempotency-key", idempotencyKey)
+            .POST(HttpRequest.BodyPublishers.noBody())
+            .build()
+        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
     }
 
     override fun price() = properties.price
