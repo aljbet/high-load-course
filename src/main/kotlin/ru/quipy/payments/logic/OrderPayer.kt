@@ -12,6 +12,7 @@ import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.RateLimiter
+import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.time.Duration
@@ -55,17 +56,16 @@ class OrderPayer {
         paymentExecutor.prestartAllCoreThreads()
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
         rateLimiter =
-            LeakingBucketRateLimiter(
-                rate = 5000,
-                window = Duration.ofMillis(1000),
-                bucketSize = 5000
+            SlidingWindowRateLimiter(
+                1100,
+                Duration.ofSeconds(1)
             )
     }
 
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(50)
+            throw TooManyRequestsError(10000)
         }
 
         executorScope.launch {

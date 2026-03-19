@@ -113,26 +113,33 @@ class PaymentExternalSystemAdapterImpl(
 
                 val request = HttpRequest.newBuilder()
                     .uri(URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"))
-                    .timeout(Duration.ofMillis(20000))   // read timeout
+                    .timeout(Duration.ofMillis(1500))   // read timeout
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build()
                 try {
-                    val firstDeferred = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
-                    val httpResponse = withTimeoutOrNull(hedgeDelayMs) { firstDeferred.await() }
-                        ?: run {
-                            hedgeCounterMetric.increment()
-                            logger.warn("[$accountName] [HEDGE] txId=$transactionId payment=$paymentId — sending hedged request")
-                            if (rateLimiter.tick()) {
-                                val hedgeDeferred = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
-                                select {
-                                    firstDeferred.onAwait { it }
-                                    hedgeDeferred.onAwait { it }
-                                }
-                            } else {
-                                firstDeferred.await()
-                            }
-                        }
-                    val response = httpResponse
+//                    val firstDeferred = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
+//                    val httpResponse = withTimeoutOrNull(hedgeDelayMs) {
+//                        try {
+//                            firstDeferred.await()
+//                        } catch (e: CancellationException) {
+//                            null
+//                        }
+//                    }
+//                        ?: run {
+//                            hedgeCounterMetric.increment()
+//                            logger.warn("[$accountName] [HEDGE] txId=$transactionId payment=$paymentId — sending hedged request")
+//                            if (rateLimiter.tick()) {
+//                                val hedgeDeferred =
+//                                    client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
+//                                select {
+//                                    firstDeferred.onAwait { it }
+//                                    hedgeDeferred.onAwait { it }
+//                                }
+//                            } else {
+//                                firstDeferred.await()
+//                            }
+//                        }
+                    val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
                     val code = response.statusCode()
                     val body = try {
                         mapper.readValue(response.body(), ExternalSysResponse::class.java)
