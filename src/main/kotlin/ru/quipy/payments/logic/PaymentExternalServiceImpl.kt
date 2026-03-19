@@ -103,7 +103,7 @@ class PaymentExternalSystemAdapterImpl(
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
         val start = now()
-        val maxRetries = 1
+        val maxRetries = 5
         val avgProcMs = requestAverageProcessingTime.toMillis()
 
         suspend fun attemptCall(attempt: Int) {
