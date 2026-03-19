@@ -7,9 +7,8 @@ import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.async
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.future.asDeferred
-import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Semaphore
@@ -190,43 +189,29 @@ class PaymentExternalSystemAdapterImpl(
 
     suspend fun sendHedge(uri: URI): HttpResponse<String> {
         val idempotencyKey = UUID.randomUUID().toString()
-        val firstDeferred = httpExecutorScope.async { send(uri, idempotencyKey) }
-        if (rateLimiter.tick() && !firstDeferred.isCompleted) {
-            return firstDeferred.await()
-        }
-        val secondDeferred = httpExecutorScope.async { send(uri, idempotencyKey) }
-//        val thirdDeferred = httpExecutorScope.async {
-//            if (rateLimiter.tick() && !firstDeferred.isCompleted && !secondDeferred.isCompleted) {
-//                send(uri, idempotencyKey)
-//            } else null
-//        }
-        return select {
-            firstDeferred.onAwait { result ->
-                secondDeferred.cancel()
-//                thirdDeferred.cancel()
-                result
+        val firstDeferred = send(uri, idempotencyKey)
+        return withTimeoutOrNull(hedgeDelayMs) { firstDeferred.await() }
+            ?: run {
+                if (rateLimiter.tick()) {
+                    val hedgeDeferred = send(uri, idempotencyKey)
+                    select {
+                        firstDeferred.onAwait { it }
+                        hedgeDeferred.onAwait { it }
+                    }
+                } else {
+                    firstDeferred.await()
+                }
             }
-            secondDeferred.onAwait { result ->
-                firstDeferred.cancel()
-//                thirdDeferred.cancel()
-                result
-            }
-//            thirdDeferred.onAwait { result ->
-//                firstDeferred.cancel()
-//                secondDeferred.cancel()
-//                result
-//            }
-        }
     }
 
-    suspend fun send(uri: URI, idempotencyKey: String): HttpResponse<String> {
+    fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
         val request = HttpRequest.newBuilder()
             .uri(uri)
             .timeout(Duration.ofMillis(1500))   // read timeout
             .header("x-idempotency-key", idempotencyKey)
             .POST(HttpRequest.BodyPublishers.noBody())
             .build()
-        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
+        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
     }
 
     override fun price() = properties.price
