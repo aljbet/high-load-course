@@ -7,6 +7,7 @@ import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.future.asDeferred
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
@@ -92,8 +93,8 @@ class PaymentExternalSystemAdapterImpl(
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
         val transactionId = UUID.randomUUID()
-        val idempotencyKey = UUID.randomUUID().toString()
-        val uri = URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
+        val uri =
+            URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
 
         // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
         // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
@@ -114,7 +115,7 @@ class PaymentExternalSystemAdapterImpl(
                 rateLimiter.tickBlocking()
 
                 try {
-                    val response = send(uri, idempotencyKey)
+                    val response = sendHedge(uri)
                     val code = response.statusCode()
                     val body = try {
                         mapper.readValue(response.body(), ExternalSysResponse::class.java)
@@ -185,6 +186,37 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         httpExecutorScope.launch { attemptCall(0) }
+    }
+
+    suspend fun sendHedge(uri: URI): HttpResponse<String> {
+        val idempotencyKey = UUID.randomUUID().toString()
+        val firstDeferred = httpExecutorScope.async { send(uri, idempotencyKey) }
+        if (rateLimiter.tick() && !firstDeferred.isCompleted) {
+            return firstDeferred.await()
+        }
+        val secondDeferred = httpExecutorScope.async { send(uri, idempotencyKey) }
+//        val thirdDeferred = httpExecutorScope.async {
+//            if (rateLimiter.tick() && !firstDeferred.isCompleted && !secondDeferred.isCompleted) {
+//                send(uri, idempotencyKey)
+//            } else null
+//        }
+        return select {
+            firstDeferred.onAwait { result ->
+                secondDeferred.cancel()
+//                thirdDeferred.cancel()
+                result
+            }
+            secondDeferred.onAwait { result ->
+                firstDeferred.cancel()
+//                thirdDeferred.cancel()
+                result
+            }
+//            thirdDeferred.onAwait { result ->
+//                firstDeferred.cancel()
+//                secondDeferred.cancel()
+//                result
+//            }
+        }
     }
 
     suspend fun send(uri: URI, idempotencyKey: String): HttpResponse<String> {
