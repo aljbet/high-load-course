@@ -83,7 +83,7 @@ class PaymentExternalSystemAdapterImpl(
         .register(promRegistry)
 
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
-    private val hedgeDelayMs = 275L
+    private val hedgeDelayMs = 175L
     private val scheduler = Executors.newScheduledThreadPool(100)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
