@@ -45,8 +45,8 @@ class OrderPayer {
     @PostConstruct
     private fun initialize() {
         paymentExecutor = ThreadPoolExecutor(
-            200,
-            200,
+            16,
+            16,
             0L,
             TimeUnit.MILLISECONDS,
             LinkedBlockingQueue(10_000),
@@ -65,7 +65,7 @@ class OrderPayer {
     suspend fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()
         if (!rateLimiter.tick()) {
-            throw TooManyRequestsError(10000)
+            throw TooManyRequestsError(1000)
         }
 
         executorScope.launch {

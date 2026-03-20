@@ -83,7 +83,7 @@ class PaymentExternalSystemAdapterImpl(
         .register(promRegistry)
 
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
-    private val hedgeDelayMs = 1000L
+    private val hedgeDelayMs = 100L
     private val scheduler = Executors.newScheduledThreadPool(100)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -205,7 +205,7 @@ class PaymentExternalSystemAdapterImpl(
     fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
         val request = HttpRequest.newBuilder()
             .uri(uri)
-            .timeout(Duration.ofMillis(15000))   // read timeout
+            .timeout(Duration.ofMillis(1500))   // read timeout
             .header("x-idempotency-key", idempotencyKey)
             .POST(HttpRequest.BodyPublishers.noBody())
             .build()
