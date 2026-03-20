@@ -90,7 +90,8 @@ class PaymentExternalSystemAdapterImpl(
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
         val transactionId = UUID.randomUUID()
-        val uri = URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
+        val uri =
+            URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
 
         // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
         // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
@@ -187,19 +188,37 @@ class PaymentExternalSystemAdapterImpl(
     suspend fun sendHedge(uri: URI): HttpResponse<String> {
         val idempotencyKey = UUID.randomUUID().toString()
         val firstDeferred = send(uri, idempotencyKey)
-        return withTimeoutOrNull(hedgeDelayMs) { firstDeferred.await() }
-            ?: run {
-                if (rateLimiter.tick()) {
-                    val hedgeDeferred = send(uri, idempotencyKey)
-                    select {
-                        firstDeferred.onAwait { logger.info("[HEDGE] first"); it }
-                        hedgeDeferred.onAwait { logger.info("[HEDGE] second"); it }
+        val allDeferred = mutableListOf(firstDeferred)
+        for (hedgeIndex in 1..3) {
+            val result = withTimeoutOrNull(hedgeDelayMs) {
+                select {
+                    allDeferred.forEach { deferred ->
+                        deferred.onAwait { response ->
+                            val type = if (deferred === firstDeferred) "first" else "hedge#$hedgeIndex"
+                            logger.info("[HEDGE] completed from $type")
+                            response
+                        }
                     }
-                } else {
-                    firstDeferred.await()
                 }
             }
-//        return firstDeferred.await()
+            if (result != null) {
+                return result
+            }
+
+            if (rateLimiter.tick()) {
+                val newHedge = send(uri, idempotencyKey)
+                allDeferred.add(newHedge)
+                logger.info("[HEDGE] added hedge #$hedgeIndex")
+            } else {
+                logger.info("[HEDGE] rate limiter blocked hedge #$hedgeIndex")
+                continue
+            }
+        }
+        return select {
+            allDeferred.forEach { deferred ->
+                deferred.onAwait { response -> response }
+            }
+        }
     }
 
     fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
