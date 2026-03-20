@@ -7,10 +7,13 @@ import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.future.await
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.future.asDeferred
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.NamedThreadFactory
@@ -51,7 +54,7 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val price = properties.price
-    private val retryAfter = 50L
+    private val retryAfter = 100L
     private val rateLimiter = SlidingWindowRateLimiter(
         rateLimitPerSec.toLong(),
         Duration.ofSeconds(1)
@@ -74,19 +77,21 @@ class PaymentExternalSystemAdapterImpl(
         .version(HttpClient.Version.HTTP_2)
         .build()
 
-
     private val requestLatency = DistributionSummary
         .builder("request_latency")
         .publishPercentiles(0.95)
         .register(promRegistry)
 
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
+    private val hedgeDelayMs = 175L
     private val scheduler = Executors.newScheduledThreadPool(100)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
         val transactionId = UUID.randomUUID()
+        val uri =
+            URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
 
         // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
         // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
@@ -98,7 +103,7 @@ class PaymentExternalSystemAdapterImpl(
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
         val start = now()
-        val maxRetries = 1
+        val maxRetries = 3
         val avgProcMs = requestAverageProcessingTime.toMillis()
 
         suspend fun attemptCall(attempt: Int) {
@@ -106,13 +111,8 @@ class PaymentExternalSystemAdapterImpl(
             semaphore.withPermit {
                 rateLimiter.tickBlocking()
 
-                val request = HttpRequest.newBuilder()
-                    .uri(URI.create("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"))
-                    .timeout(Duration.ofMillis(20000))   // read timeout
-                    .POST(HttpRequest.BodyPublishers.noBody())
-                    .build()
                 try {
-                    val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
+                    val response = sendHedge(uri)
                     val code = response.statusCode()
                     val body = try {
                         mapper.readValue(response.body(), ExternalSysResponse::class.java)
@@ -183,6 +183,52 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         httpExecutorScope.launch { attemptCall(0) }
+    }
+
+    suspend fun sendHedge(uri: URI): HttpResponse<String> {
+        val idempotencyKey = UUID.randomUUID().toString()
+        val firstDeferred = send(uri, idempotencyKey)
+        val allDeferred = mutableListOf(firstDeferred)
+        for (hedgeIndex in 1..3) {
+            val result = withTimeoutOrNull(hedgeDelayMs) {
+                select {
+                    allDeferred.forEach { deferred ->
+                        deferred.onAwait { response ->
+                            val type = if (deferred === firstDeferred) "first" else "hedge#$hedgeIndex"
+                            logger.info("[HEDGE] completed from $type")
+                            response
+                        }
+                    }
+                }
+            }
+            if (result != null) {
+                return result
+            }
+
+            if (rateLimiter.tick()) {
+                val newHedge = send(uri, idempotencyKey)
+                allDeferred.add(newHedge)
+                logger.info("[HEDGE] added hedge #$hedgeIndex")
+            } else {
+                logger.info("[HEDGE] rate limiter blocked hedge #$hedgeIndex")
+                continue
+            }
+        }
+        return select {
+            allDeferred.forEach { deferred ->
+                deferred.onAwait { response -> response }
+            }
+        }
+    }
+
+    fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
+        val request = HttpRequest.newBuilder()
+            .uri(uri)
+            .timeout(Duration.ofMillis(1500))   // read timeout
+            .header("x-idempotency-key", idempotencyKey)
+            .POST(HttpRequest.BodyPublishers.noBody())
+            .build()
+        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
     }
 
     override fun price() = properties.price
