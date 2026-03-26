@@ -117,20 +117,33 @@ class PaymentExternalSystemAdapterImpl(
         val start = now()
 
         suspend fun attemptCall(attempt: Int) {
+            val retryAfterMs = (retryAfter * (1L shl attempt))
+
+            if (!circuitBreaker.tryAcquirePermission()) {
+                scheduler.schedule(
+                    { httpExecutorScope.launch { attemptCall(attempt) } },
+                    retryAfterMs,
+                    TimeUnit.MILLISECONDS
+                )
+                return
+            }
             val isBeneficial = amount > price * (attempt + 1)
             semaphore.withPermit {
                 rateLimiter.tickBlocking()
+
                 try {
                     val response = sendHedge(uri)
                     val code = response.statusCode()
                     val body = try {
                         mapper.readValue(response.body(), ExternalSysResponse::class.java)
                     } catch (e: Exception) {
+                        circuitBreakerOnError(now() - start)
                         logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId code=${response.statusCode()} reason=${response.body()}")
                         ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
                     }
 
                     if (code in 200..299 && body.result) {
+                        circuitBreakerOnSuccess(now() - start)
                         logger.warn("[$accountName] [OK] txId=$transactionId payment=$paymentId")
                         paymentEventWriter.submit(paymentId) {
                             paymentESService.update(paymentId) {
@@ -142,8 +155,9 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     val error = code == 500 || code == 502 || code == 503 || code == 504
-                    if (error && circuitBreaker.tryAcquirePermission())
-
+                    if (error) {
+                        circuitBreakerOnError(now() - start)
+                    }
                     if (
                         (code == 200 || error) &&
                         attempt < maxRetries &&
@@ -151,7 +165,6 @@ class PaymentExternalSystemAdapterImpl(
                         isBeneficial
                     ) {
                         retryCounterMetric.increment()
-                        val retryAfterMs = (retryAfter * (1L shl attempt))
                         logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $retryAfterMs ms.")
                         scheduler.schedule(
                             { httpExecutorScope.launch { attemptCall(attempt + 1) } },
@@ -186,6 +199,7 @@ class PaymentExternalSystemAdapterImpl(
                         return
                     }
 
+                    circuitBreakerOnError(now() - start)
                     logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", ex)
                     paymentEventWriter.submit(paymentId) {
                         paymentESService.update(paymentId) {
@@ -243,6 +257,21 @@ class PaymentExternalSystemAdapterImpl(
             .POST(HttpRequest.BodyPublishers.noBody())
             .build()
         return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
+    }
+
+    private fun circuitBreakerOnError(duration: Long) {
+        circuitBreaker.onError(
+            duration,
+            TimeUnit.MILLISECONDS,
+            Exception("Service unavailable")
+        )
+    }
+
+    private fun circuitBreakerOnSuccess(duration: Long) {
+        circuitBreaker.onSuccess(
+            duration,
+            TimeUnit.MILLISECONDS
+        )
     }
 
     override fun price() = properties.price
