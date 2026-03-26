@@ -117,20 +117,32 @@ class PaymentExternalSystemAdapterImpl(
         val start = now()
 
         suspend fun attemptCall(attempt: Int) {
-            val retryAfterMs = (retryAfter * (1L shl attempt))
 
             if (!circuitBreaker.tryAcquirePermission()) {
                 scheduler.schedule(
                     { httpExecutorScope.launch { attemptCall(attempt) } },
-                    retryAfterMs,
+                    retryAfter * (1L shl attempt),
                     TimeUnit.MILLISECONDS
                 )
                 return
             }
             val isBeneficial = amount > price * (attempt + 1)
+
+            fun scheduleRetryCall(attempt: Int) {
+                retryCounterMetric.increment()
+                val retryAfterMs = (retryAfter * (1L shl attempt))
+                logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $retryAfterMs ms.")
+                scheduler.schedule(
+                    { httpExecutorScope.launch { attemptCall(attempt + 1) } },
+                    retryAfterMs,
+                    TimeUnit.MILLISECONDS
+                )
+            }
+
+            fun isRetryNeeded() = attempt < maxRetries && deadline - now() > avgProcMs + retryAfter && isBeneficial
+
             semaphore.withPermit {
                 rateLimiter.tickBlocking()
-
                 try {
                     val response = sendHedge(uri)
                     val code = response.statusCode()
@@ -142,69 +154,26 @@ class PaymentExternalSystemAdapterImpl(
                         ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
                     }
 
-                    if (code in 200..299 && body.result) {
+                    if (code.isSuccessful() && body.result) {
                         circuitBreakerOnSuccess(now() - start)
                         logger.warn("[$accountName] [OK] txId=$transactionId payment=$paymentId")
-                        paymentEventWriter.submit(paymentId) {
-                            paymentESService.update(paymentId) {
-                                it.logProcessing(true, now(), transactionId, reason = body.message)
-                            }
-                        }
-                        requestLatency.record((now() - start).toDouble())
-                        return
+                        writePaymentEvent(true, paymentId, transactionId, body.message ?: "Failed")
+                    } else if ((code.isServerError() || code.isSuccessful()) && isRetryNeeded()) {
+                        scheduleRetryCall(attempt)
+                    } else {
+                        logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
+                        writePaymentEvent(false, paymentId, transactionId, body.message)
                     }
 
-                    val error = code == 500 || code == 502 || code == 503 || code == 504
-                    if (error) {
-                        circuitBreakerOnError(now() - start)
-                    }
-                    if (
-                        (code == 200 || error) &&
-                        attempt < maxRetries &&
-                        (deadline - now()) > avgProcMs &&
-                        isBeneficial
-                    ) {
-                        retryCounterMetric.increment()
-                        logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $retryAfterMs ms.")
-                        scheduler.schedule(
-                            { httpExecutorScope.launch { attemptCall(attempt + 1) } },
-                            retryAfterMs,
-                            TimeUnit.MILLISECONDS
-                        )
-                        requestLatency.record((now() - start).toDouble())
-                        return
-                    }
-
-                    logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
-                    paymentEventWriter.submit(paymentId) {
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
-                        }
-                    }
+                    if (code.isServerError()) { circuitBreakerOnError(now() - start) }
                     requestLatency.record((now() - start).toDouble())
                 } catch (ex: Exception) {
-                    if (
-                        ex is SocketTimeoutException &&
-                        attempt < maxRetries &&
-                        deadline - now() > avgProcMs + retryAfter &&
-                        isBeneficial
-                    ) {
-                        retryCounterMetric.increment()
-                        val retryAfterMs = (retryAfter * (1L shl attempt))
-                        scheduler.schedule(
-                            { httpExecutorScope.launch { attemptCall(attempt + 1) } },
-                            retryAfterMs,
-                            TimeUnit.MILLISECONDS
-                        )
-                        return
-                    }
-
-                    circuitBreakerOnError(now() - start)
-                    logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", ex)
-                    paymentEventWriter.submit(paymentId) {
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, reason = ex.message)
-                        }
+                    if (ex is SocketTimeoutException && isRetryNeeded()) {
+                        scheduleRetryCall(attempt)
+                    } else {
+                        circuitBreakerOnError(now() - start)
+                        logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", ex)
+                        writePaymentEvent(false, paymentId, transactionId, ex.message)
                     }
                 }
             }
@@ -213,12 +182,12 @@ class PaymentExternalSystemAdapterImpl(
         httpExecutorScope.launch { attemptCall(0) }
     }
 
-    suspend fun sendHedge(uri: URI): HttpResponse<String> {
+    private suspend fun sendHedge(uri: URI): HttpResponse<String> {
         val idempotencyKey = UUID.randomUUID().toString()
         val firstDeferred = send(uri, idempotencyKey)
         val allDeferred = mutableListOf(firstDeferred)
         for (hedgeIndex in 1..3) {
-            val result = withTimeoutOrNull(hedgeDelayMs) {
+            withTimeoutOrNull(hedgeDelayMs) {
                 select {
                     allDeferred.forEach { deferred ->
                         deferred.onAwait { response ->
@@ -228,10 +197,7 @@ class PaymentExternalSystemAdapterImpl(
                         }
                     }
                 }
-            }
-            if (result != null) {
-                return result
-            }
+            }?.let { return it }
 
             if (rateLimiter.tick()) {
                 val newHedge = send(uri, idempotencyKey)
@@ -249,7 +215,7 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
+    private fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
         val request = HttpRequest.newBuilder()
             .uri(uri)
             .timeout(Duration.ofMillis(1500))   // read timeout
@@ -257,6 +223,14 @@ class PaymentExternalSystemAdapterImpl(
             .POST(HttpRequest.BodyPublishers.noBody())
             .build()
         return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
+    }
+
+    private suspend fun writePaymentEvent(isSuccess: Boolean, paymentId: UUID, transactionId: UUID, message: String?) {
+        paymentEventWriter.submit(paymentId) {
+            paymentESService.update(paymentId) {
+                it.logProcessing(isSuccess, now(), transactionId, reason = message)
+            }
+        }
     }
 
     private fun circuitBreakerOnError(duration: Long) {
@@ -273,6 +247,9 @@ class PaymentExternalSystemAdapterImpl(
             TimeUnit.MILLISECONDS
         )
     }
+
+    private fun Int.isServerError() = this in listOf(500, 502, 503, 504)
+    private fun Int.isSuccessful() = this in 200..299
 
     override fun price() = properties.price
 
