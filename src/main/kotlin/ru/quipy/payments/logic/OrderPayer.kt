@@ -57,7 +57,7 @@ class OrderPayer {
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
         rateLimiter =
             SlidingWindowRateLimiter(
-                1100,
+                1000,
                 Duration.ofSeconds(1)
             )
     }
