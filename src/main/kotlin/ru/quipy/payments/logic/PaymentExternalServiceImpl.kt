@@ -120,7 +120,7 @@ class PaymentExternalSystemAdapterImpl(
         suspend fun attemptCall(attempt: Int) {
 
             while (!circuitBreaker.tryAcquirePermission()) {
-                delay(100)
+                delay(10000)
             }
             val isBeneficial = amount > price * (attempt + 1)
 
