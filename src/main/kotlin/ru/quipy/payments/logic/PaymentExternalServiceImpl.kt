@@ -10,6 +10,7 @@ import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.asDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
@@ -118,13 +119,8 @@ class PaymentExternalSystemAdapterImpl(
 
         suspend fun attemptCall(attempt: Int) {
 
-            if (!circuitBreaker.tryAcquirePermission()) {
-                scheduler.schedule(
-                    { httpExecutorScope.launch { attemptCall(attempt) } },
-                    retryAfter * (1L shl attempt),
-                    TimeUnit.MILLISECONDS
-                )
-                return
+            while (!circuitBreaker.tryAcquirePermission()) {
+                delay(100)
             }
             val isBeneficial = amount > price * (attempt + 1)
 
