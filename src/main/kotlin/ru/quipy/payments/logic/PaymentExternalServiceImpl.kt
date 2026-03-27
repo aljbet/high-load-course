@@ -134,7 +134,7 @@ class PaymentExternalSystemAdapterImpl(
                 attempt < maxRetries && deadline - now() > avgProcMs + retryAfter && amount > price * (attempt + 1)
 
             while (!circuitBreaker.tryAcquirePermission()) {
-                delay(10000)
+                delay(5000)
             }
             semaphore.withPermit {
                 rateLimiter.tickBlocking()
@@ -181,7 +181,7 @@ class PaymentExternalSystemAdapterImpl(
         val idempotencyKey = UUID.randomUUID().toString()
         val firstDeferred = send(uri, idempotencyKey)
         val allDeferred = mutableListOf(firstDeferred)
-        for (hedgeIndex in 1..0) {
+        for (hedgeIndex in 1..1) {
             withTimeoutOrNull(hedgeDelayMs) {
                 select {
                     allDeferred.forEach { deferred ->
