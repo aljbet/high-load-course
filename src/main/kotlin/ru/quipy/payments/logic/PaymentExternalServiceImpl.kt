@@ -119,11 +119,6 @@ class PaymentExternalSystemAdapterImpl(
 
         suspend fun attemptCall(attempt: Int) {
 
-            while (!circuitBreaker.tryAcquirePermission()) {
-                delay(10000)
-            }
-            val isBeneficial = amount > price * (attempt + 1)
-
             fun scheduleRetryCall(attempt: Int) {
                 retryCounterMetric.increment()
                 val retryAfterMs = (retryAfter * (1L shl attempt))
@@ -135,8 +130,12 @@ class PaymentExternalSystemAdapterImpl(
                 )
             }
 
-            fun isRetryNeeded() = attempt < maxRetries && deadline - now() > avgProcMs + retryAfter && isBeneficial
+            fun isRetryNeeded() =
+                attempt < maxRetries && deadline - now() > avgProcMs + retryAfter && amount > price * (attempt + 1)
 
+            while (!circuitBreaker.tryAcquirePermission()) {
+                delay(100)
+            }
             semaphore.withPermit {
                 rateLimiter.tickBlocking()
                 try {
@@ -161,7 +160,9 @@ class PaymentExternalSystemAdapterImpl(
                         writePaymentEvent(false, paymentId, transactionId, body.message)
                     }
 
-                    if (code.isServerError()) { circuitBreakerOnError(now() - start) }
+                    if (code.isServerError()) {
+                        circuitBreakerOnError(now() - start)
+                    }
                     requestLatency.record((now() - start).toDouble())
                 } catch (ex: Exception) {
                     if (ex is SocketTimeoutException && isRetryNeeded()) {
