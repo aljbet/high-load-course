@@ -59,7 +59,7 @@ class OrderPayer {
             LeakingBucketRateLimiter(
                 200,
                 Duration.ofSeconds(1),
-                2000
+                10000
             )
     }
 
