@@ -57,7 +57,7 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val price = properties.price
-    private val retryAfter = 100L
+    private val retryAfter = 1000L
     private val rateLimiter = SlidingWindowRateLimiter(
         rateLimitPerSec.toLong(),
         Duration.ofSeconds(1)
@@ -68,7 +68,7 @@ class PaymentExternalSystemAdapterImpl(
             CircuitBreakerConfig.custom()
                 .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.TIME_BASED)
                 .slidingWindowSize(5)
-                .waitDurationInOpenState(Duration.ofSeconds(5))
+                .waitDurationInOpenState(Duration.ofSeconds(2))
                 .minimumNumberOfCalls(50)
                 .build()
         ).circuitBreaker("abas")
@@ -97,7 +97,7 @@ class PaymentExternalSystemAdapterImpl(
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
     private val hedgeDelayMs = 175L
     private val scheduler = Executors.newScheduledThreadPool(100)
-    private val maxRetries = 3
+    private val maxRetries = 2
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -119,7 +119,7 @@ class PaymentExternalSystemAdapterImpl(
 
         suspend fun attemptCall(attempt: Int) {
 
-            fun scheduleRetryCall(attempt: Int) {
+            fun scheduleRetryCall() {
                 retryCounterMetric.increment()
                 val retryAfterMs = (retryAfter * (1L shl attempt))
                 logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $retryAfterMs ms.")
@@ -154,19 +154,17 @@ class PaymentExternalSystemAdapterImpl(
                         logger.warn("[$accountName] [OK] txId=$transactionId payment=$paymentId")
                         writePaymentEvent(true, paymentId, transactionId, body.message ?: "Failed")
                     } else if ((code.isServerError() || code.isSuccessful()) && isRetryNeeded()) {
-                        scheduleRetryCall(attempt)
+                        scheduleRetryCall()
                     } else {
                         logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
                         writePaymentEvent(false, paymentId, transactionId, body.message)
                     }
 
-                    if (code.isServerError()) {
-                        circuitBreakerOnError(now() - start)
-                    }
+                    if (code.isServerError()) { circuitBreakerOnError(now() - start) }
                     requestLatency.record((now() - start).toDouble())
                 } catch (ex: Exception) {
                     if (ex is SocketTimeoutException && isRetryNeeded()) {
-                        scheduleRetryCall(attempt)
+                        scheduleRetryCall()
                     } else {
                         circuitBreakerOnError(now() - start)
                         logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", ex)
@@ -183,7 +181,7 @@ class PaymentExternalSystemAdapterImpl(
         val idempotencyKey = UUID.randomUUID().toString()
         val firstDeferred = send(uri, idempotencyKey)
         val allDeferred = mutableListOf(firstDeferred)
-        for (hedgeIndex in 1..3) {
+        for (hedgeIndex in 1..0) {
             withTimeoutOrNull(hedgeDelayMs) {
                 select {
                     allDeferred.forEach { deferred ->
@@ -215,7 +213,7 @@ class PaymentExternalSystemAdapterImpl(
     private fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
         val request = HttpRequest.newBuilder()
             .uri(uri)
-            .timeout(Duration.ofMillis(1500))   // read timeout
+            .timeout(Duration.ofMillis(1000000))   // read timeout
             .header("x-idempotency-key", idempotencyKey)
             .POST(HttpRequest.BodyPublishers.noBody())
             .build()
