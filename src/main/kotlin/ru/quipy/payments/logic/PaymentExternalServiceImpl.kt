@@ -57,7 +57,7 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val price = properties.price
-    private val retryAfter = 1000L
+    private val retryAfter = 100L
     private val rateLimiter = SlidingWindowRateLimiter(
         rateLimitPerSec.toLong(),
         Duration.ofSeconds(1)
@@ -68,7 +68,7 @@ class PaymentExternalSystemAdapterImpl(
             CircuitBreakerConfig.custom()
                 .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.TIME_BASED)
                 .slidingWindowSize(5)
-                .waitDurationInOpenState(Duration.ofSeconds(2))
+                .waitDurationInOpenState(Duration.ofSeconds(5))
                 .minimumNumberOfCalls(50)
                 .build()
         ).circuitBreaker("abas")
@@ -97,7 +97,7 @@ class PaymentExternalSystemAdapterImpl(
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
     private val hedgeDelayMs = 175L
     private val scheduler = Executors.newScheduledThreadPool(100)
-    private val maxRetries = 2
+    private val maxRetries = 3
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -134,7 +134,7 @@ class PaymentExternalSystemAdapterImpl(
                 attempt < maxRetries && deadline - now() > avgProcMs + retryAfter && amount > price * (attempt + 1)
 
             while (!circuitBreaker.tryAcquirePermission()) {
-                delay(100)
+                delay(10000)
             }
             semaphore.withPermit {
                 rateLimiter.tickBlocking()
@@ -181,7 +181,7 @@ class PaymentExternalSystemAdapterImpl(
         val idempotencyKey = UUID.randomUUID().toString()
         val firstDeferred = send(uri, idempotencyKey)
         val allDeferred = mutableListOf(firstDeferred)
-        for (hedgeIndex in 1..0) {
+        for (hedgeIndex in 1..3) {
             withTimeoutOrNull(hedgeDelayMs) {
                 select {
                     allDeferred.forEach { deferred ->
@@ -213,7 +213,7 @@ class PaymentExternalSystemAdapterImpl(
     private fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
         val request = HttpRequest.newBuilder()
             .uri(uri)
-            .timeout(Duration.ofMillis(1000000))   // read timeout
+            .timeout(Duration.ofMillis(1500))   // read timeout
             .header("x-idempotency-key", idempotencyKey)
             .POST(HttpRequest.BodyPublishers.noBody())
             .build()

@@ -56,10 +56,9 @@ class OrderPayer {
         paymentExecutor.prestartAllCoreThreads()
         executorScope = CoroutineScope(paymentExecutor.asCoroutineDispatcher())
         rateLimiter =
-            LeakingBucketRateLimiter(
-                200,
-                Duration.ofSeconds(1),
-                1000
+            SlidingWindowRateLimiter(
+                1000,
+                Duration.ofSeconds(1)
             )
     }
 
