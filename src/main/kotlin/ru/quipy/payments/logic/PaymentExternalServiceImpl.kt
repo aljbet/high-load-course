@@ -2,12 +2,15 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.asDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
@@ -50,7 +53,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
-    private val requestAverageProcessingTime = properties.averageProcessingTime
+    private val avgProcMs = properties.averageProcessingTime.toMillis()
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val price = properties.price
@@ -60,6 +63,15 @@ class PaymentExternalSystemAdapterImpl(
         Duration.ofSeconds(1)
     )
     private val semaphore = Semaphore(parallelRequests)
+    private val circuitBreaker =
+        CircuitBreakerRegistry.of(
+            CircuitBreakerConfig.custom()
+                .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.TIME_BASED)
+                .slidingWindowSize(5)
+                .waitDurationInOpenState(Duration.ofSeconds(5))
+                .minimumNumberOfCalls(50)
+                .build()
+        ).circuitBreaker("abas")
 
     private val httpExecutor = ThreadPoolExecutor(
         16,
@@ -85,6 +97,7 @@ class PaymentExternalSystemAdapterImpl(
     private val retryCounterMetric: Counter = Counter.builder("retry_counter").register(promRegistry)
     private val hedgeDelayMs = 175L
     private val scheduler = Executors.newScheduledThreadPool(100)
+    private val maxRetries = 3
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -103,80 +116,59 @@ class PaymentExternalSystemAdapterImpl(
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId, amount: $amount")
         val start = now()
-        val maxRetries = 3
-        val avgProcMs = requestAverageProcessingTime.toMillis()
 
         suspend fun attemptCall(attempt: Int) {
-            val isBeneficial = amount > price * (attempt + 1)
+
+            fun scheduleRetryCall() {
+                retryCounterMetric.increment()
+                val retryAfterMs = (retryAfter * (1L shl attempt))
+                logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $retryAfterMs ms.")
+                scheduler.schedule(
+                    { httpExecutorScope.launch { attemptCall(attempt + 1) } },
+                    retryAfterMs,
+                    TimeUnit.MILLISECONDS
+                )
+            }
+
+            fun isRetryNeeded() =
+                attempt < maxRetries && deadline - now() > avgProcMs + retryAfter && amount > price * (attempt + 1)
+
+            while (!circuitBreaker.tryAcquirePermission()) {
+                delay(10000)
+            }
             semaphore.withPermit {
                 rateLimiter.tickBlocking()
-
                 try {
                     val response = sendHedge(uri)
                     val code = response.statusCode()
                     val body = try {
                         mapper.readValue(response.body(), ExternalSysResponse::class.java)
                     } catch (e: Exception) {
+                        circuitBreakerOnError(now() - start)
                         logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId code=${response.statusCode()} reason=${response.body()}")
                         ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
                     }
 
-                    val success = (code in 200..299 && body.result)
-
-                    if (success) {
+                    if (code.isSuccessful() && body.result) {
+                        circuitBreakerOnSuccess(now() - start)
                         logger.warn("[$accountName] [OK] txId=$transactionId payment=$paymentId")
-                        paymentEventWriter.submit(paymentId) {
-                            paymentESService.update(paymentId) {
-                                it.logProcessing(true, now(), transactionId, reason = body.message)
-                            }
-                        }
-                        requestLatency.record((now() - start).toDouble())
-                        return
+                        writePaymentEvent(true, paymentId, transactionId, body.message ?: "Failed")
+                    } else if ((code.isServerError() || code.isSuccessful()) && isRetryNeeded()) {
+                        scheduleRetryCall()
+                    } else {
+                        logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
+                        writePaymentEvent(false, paymentId, transactionId, body.message)
                     }
 
-                    val timeLeft = deadline - now()
-                    val retriableCode = code == 200 || code == 500 || code == 502 || code == 503 || code == 504
-
-                    if (retriableCode && attempt < maxRetries && timeLeft > avgProcMs && isBeneficial) {
-                        retryCounterMetric.increment()
-                        val retryAfterMs = (retryAfter * (1L shl attempt))
-                        logger.warn("[$accountName] [RETRY] txId=$transactionId payment=$paymentId will retry after $retryAfterMs ms.")
-                        scheduler.schedule(
-                            { httpExecutorScope.launch { attemptCall(attempt + 1) } },
-                            retryAfterMs,
-                            TimeUnit.MILLISECONDS
-                        )
-                        requestLatency.record((now() - start).toDouble())
-                        return
-                    }
-
-                    logger.warn("[$accountName] [FAIL] txId=$transactionId payment=$paymentId code=$code msg=${body.message}")
-                    paymentEventWriter.submit(paymentId) {
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, reason = body.message ?: "Failed")
-                        }
-                    }
+                    if (code.isServerError()) { circuitBreakerOnError(now() - start) }
                     requestLatency.record((now() - start).toDouble())
                 } catch (ex: Exception) {
-                    val isTimeout = ex is SocketTimeoutException
-                    val timeLeft = deadline - now()
-
-                    if (isTimeout && attempt < maxRetries && timeLeft > avgProcMs + retryAfter && isBeneficial) {
-                        retryCounterMetric.increment()
-                        val retryAfterMs = (retryAfter * (1L shl attempt))
-                        scheduler.schedule(
-                            { httpExecutorScope.launch { attemptCall(attempt + 1) } },
-                            retryAfterMs,
-                            TimeUnit.MILLISECONDS
-                        )
-                        return
-                    }
-
-                    logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", ex)
-                    paymentEventWriter.submit(paymentId) {
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, reason = ex.message)
-                        }
+                    if (ex is SocketTimeoutException && isRetryNeeded()) {
+                        scheduleRetryCall()
+                    } else {
+                        circuitBreakerOnError(now() - start)
+                        logger.error("[$accountName] [ERROR] txId=$transactionId payment=$paymentId", ex)
+                        writePaymentEvent(false, paymentId, transactionId, ex.message)
                     }
                 }
             }
@@ -185,12 +177,12 @@ class PaymentExternalSystemAdapterImpl(
         httpExecutorScope.launch { attemptCall(0) }
     }
 
-    suspend fun sendHedge(uri: URI): HttpResponse<String> {
+    private suspend fun sendHedge(uri: URI): HttpResponse<String> {
         val idempotencyKey = UUID.randomUUID().toString()
         val firstDeferred = send(uri, idempotencyKey)
         val allDeferred = mutableListOf(firstDeferred)
         for (hedgeIndex in 1..3) {
-            val result = withTimeoutOrNull(hedgeDelayMs) {
+            withTimeoutOrNull(hedgeDelayMs) {
                 select {
                     allDeferred.forEach { deferred ->
                         deferred.onAwait { response ->
@@ -200,10 +192,7 @@ class PaymentExternalSystemAdapterImpl(
                         }
                     }
                 }
-            }
-            if (result != null) {
-                return result
-            }
+            }?.let { return it }
 
             if (rateLimiter.tick()) {
                 val newHedge = send(uri, idempotencyKey)
@@ -221,7 +210,7 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
+    private fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
         val request = HttpRequest.newBuilder()
             .uri(uri)
             .timeout(Duration.ofMillis(1500))   // read timeout
@@ -230,6 +219,32 @@ class PaymentExternalSystemAdapterImpl(
             .build()
         return client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).asDeferred()
     }
+
+    private suspend fun writePaymentEvent(isSuccess: Boolean, paymentId: UUID, transactionId: UUID, message: String?) {
+        paymentEventWriter.submit(paymentId) {
+            paymentESService.update(paymentId) {
+                it.logProcessing(isSuccess, now(), transactionId, reason = message)
+            }
+        }
+    }
+
+    private fun circuitBreakerOnError(duration: Long) {
+        circuitBreaker.onError(
+            duration,
+            TimeUnit.MILLISECONDS,
+            Exception("Service unavailable")
+        )
+    }
+
+    private fun circuitBreakerOnSuccess(duration: Long) {
+        circuitBreaker.onSuccess(
+            duration,
+            TimeUnit.MILLISECONDS
+        )
+    }
+
+    private fun Int.isServerError() = this in listOf(500, 502, 503, 504)
+    private fun Int.isSuccessful() = this in 200..299
 
     override fun price() = properties.price
 
