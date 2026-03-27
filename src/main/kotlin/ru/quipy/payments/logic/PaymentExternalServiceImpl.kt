@@ -68,7 +68,7 @@ class PaymentExternalSystemAdapterImpl(
             CircuitBreakerConfig.custom()
                 .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.TIME_BASED)
                 .slidingWindowSize(5)
-                .waitDurationInOpenState(Duration.ofSeconds(5))
+                .waitDurationInOpenState(Duration.ofSeconds(2))
                 .minimumNumberOfCalls(50)
                 .build()
         ).circuitBreaker("abas")
@@ -214,7 +214,7 @@ class PaymentExternalSystemAdapterImpl(
     private fun send(uri: URI, idempotencyKey: String): Deferred<HttpResponse<String>> {
         val request = HttpRequest.newBuilder()
             .uri(uri)
-            .timeout(Duration.ofMillis(1500))   // read timeout
+            .timeout(Duration.ofMillis(1000000))   // read timeout
             .header("x-idempotency-key", idempotencyKey)
             .POST(HttpRequest.BodyPublishers.noBody())
             .build()
