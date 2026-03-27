@@ -182,7 +182,7 @@ class PaymentExternalSystemAdapterImpl(
         val idempotencyKey = UUID.randomUUID().toString()
         val firstDeferred = send(uri, idempotencyKey)
         val allDeferred = mutableListOf(firstDeferred)
-        for (hedgeIndex in 1..1) {
+        for (hedgeIndex in 1..0) {
             withTimeoutOrNull(hedgeDelayMs) {
                 select {
                     allDeferred.forEach { deferred ->
